@@ -431,7 +431,7 @@ var showByIdFunctions = map[resources.Resource]runShowByIdFunc{
 	resources.Quota: func(ctx context.Context, client *sdk.Client, id sdk.ObjectIdentifier) error {
 		return runShowById(ctx, id, client.Quotas.ShowByID)
 	},
-	resources.ResourceMonitor:func(ctx context.Context, client *sdk.Client, id sdk.ObjectIdentifier) error {
+	resources.ResourceMonitor: func(ctx context.Context, client *sdk.Client, id sdk.ObjectIdentifier) error {
 		return runShowById(ctx, id, client.ResourceMonitors.ShowByID)
 	},
 	resources.RowAccessPolicy: func(ctx context.Context, client *sdk.Client, id sdk.ObjectIdentifier) error {
