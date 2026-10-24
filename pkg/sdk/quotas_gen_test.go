@@ -74,7 +74,6 @@ const (
 	case_Quotas_validation_AddCustomAction_args_Procedure_ValidIdentifier                    testCaseName = "validation_AddCustomAction_args_Procedure_ValidIdentifier"
 	case_Quotas_sql_AddCustomAction_basic                                                    testCaseName = "sql_AddCustomAction_basic"
 	case_Quotas_validation_RemoveCustomActions_name_ValidIdentifier                          testCaseName = "validation_RemoveCustomActions_name_ValidIdentifier"
-	case_Quotas_validation_RemoveCustomActions_args_Procedure_ValidIdentifierIfSet           testCaseName = "validation_RemoveCustomActions_args_Procedure_ValidIdentifierIfSet"
 	case_Quotas_sql_RemoveCustomActions_basic                                                testCaseName = "sql_RemoveCustomActions_basic"
 	case_Quotas_validation_GetCustomActions_name_ValidIdentifier                             testCaseName = "validation_GetCustomActions_name_ValidIdentifier"
 	case_Quotas_sql_GetCustomActions_basic                                                   testCaseName = "sql_GetCustomActions_basic"
@@ -700,13 +699,6 @@ var quotasTests = QuotasTestsContext{
 				ExpectedErr: errInvalidIdentifier("RemoveCustomActionsQuotaOptions", "name"),
 				DefaultModify: func(opts *RemoveCustomActionsQuotaOptions) {
 					opts.name = emptySchemaObjectIdentifier
-				},
-			},
-			validationCase[*RemoveCustomActionsQuotaOptions]{
-				Name:        case_Quotas_validation_RemoveCustomActions_args_Procedure_ValidIdentifierIfSet,
-				ExpectedErr: errInvalidIdentifier("RemoveCustomActionsQuotaOptions.args", "Procedure"),
-				DefaultModify: func(opts *RemoveCustomActionsQuotaOptions) {
-					opts.args.Procedure = new(emptySchemaObjectIdentifierWithArguments)
 				},
 			},
 		).

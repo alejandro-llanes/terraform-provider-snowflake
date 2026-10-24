@@ -31,20 +31,28 @@ type QuotaScope struct {
 	UserTags        *QuotaScopeUserTags        `json:"user_tags"`
 }
 
+// Numeric values are kept as json.Number, which accepts both JSON numbers and numeric strings.
 type QuotaScopeUser struct {
-	UserId   int64  `json:"user_id"`
-	UserName string `json:"user_name"`
+	UserId   json.Number `json:"user_id"`
+	UserName string      `json:"user_name"`
 }
 
 type QuotaScopeSharedResource struct {
-	Domain string `json:"domain"`
-	Id     int64  `json:"id"`
-	Name   string `json:"name"`
+	Domain string      `json:"domain"`
+	Id     json.Number `json:"id"`
+	Name   string      `json:"name"`
 }
 
-// IsWholeDomain reports whether the shared resource covers the whole domain rather than a single instance.
+// IsWholeDomain reports whether the shared resource covers the whole domain rather than a single instance (id -1).
 func (r QuotaScopeSharedResource) IsWholeDomain() bool {
-	return r.Id == -1
+	id, err := r.Id.Int64()
+	return err == nil && id == -1
+}
+
+// NormalizedDomain maps the domain as returned by GET_QUOTA_SCOPE (the guide's example uses CORTEX_AGENT, with an underscore)
+// to the domain accepted by ADD_SHARED_RESOURCE (CORTEX AGENT).
+func (r QuotaScopeSharedResource) NormalizedDomain() (QuotaSharedResourceDomain, error) {
+	return ToQuotaSharedResourceDomain(strings.ReplaceAll(r.Domain, "_", " "))
 }
 
 type QuotaScopeUserTags struct {
@@ -64,14 +72,74 @@ func (t QuotaScopeTag) TagId() SchemaObjectIdentifier {
 	return NewSchemaObjectIdentifier(t.TagDatabase, t.TagSchema, t.TagKey)
 }
 
-// QuotaConfig is the result of GET_CONFIG. The guide names only the keys below; limits are parsed as floats
-// in case Snowflake returns them with a fractional part.
+// QuotaConfig is the result of GET_CONFIG. The guide names only the keys below ("including", so there may be more).
 // TODO [quota spike]: verify the JSON shape, and whether the block enforcement email flag and admin emails are returned.
 type QuotaConfig struct {
-	PerUserLimit            *float64 `json:"per_user_limit"`
-	PerUserLimitWeekly      *float64 `json:"per_user_limit_weekly"`
-	PerUserLimitDaily       *float64 `json:"per_user_limit_daily"`
-	BlockEnforcementEnabled *bool    `json:"block_enforcement_enabled"`
+	PerUserLimit            *json.Number `json:"per_user_limit"`
+	PerUserLimitWeekly      *json.Number `json:"per_user_limit_weekly"`
+	PerUserLimitDaily       *json.Number `json:"per_user_limit_daily"`
+	BlockEnforcementEnabled *bool        `json:"block_enforcement_enabled"`
+}
+
+// PerUserLimitFor returns the limit of the given cycle, or nil when it isn't set.
+func (c QuotaConfig) PerUserLimitFor(cycle QuotaCycle) (*float64, error) {
+	var limit *json.Number
+	switch cycle {
+	case QuotaCycleMonthly:
+		limit = c.PerUserLimit
+	case QuotaCycleWeekly:
+		limit = c.PerUserLimitWeekly
+	case QuotaCycleDaily:
+		limit = c.PerUserLimitDaily
+	default:
+		return nil, fmt.Errorf("unsupported quota cycle: %s", cycle)
+	}
+	if limit == nil || *limit == "" {
+		return nil, nil
+	}
+	value, err := limit.Float64()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse the %s per-user limit %q: %w", cycle, *limit, err)
+	}
+	return &value, nil
+}
+
+// ProcedureId parses the PROCEDURE_FQN returned by GET_CUSTOM_ACTIONS.
+// TODO [quota spike]: verify the PROCEDURE_FQN format (quoting, argument types).
+func (a QuotaCustomAction) ProcedureId() (SchemaObjectIdentifierWithArguments, error) {
+	return ParseSchemaObjectIdentifierWithArguments(a.ProcedureFqn)
+}
+
+// IsSet reports whether a cycle-start action is configured (GET_CYCLE_START_ACTION may return a row of NULLs otherwise).
+func (a QuotaCycleStartAction) IsSet() bool {
+	return a.ProcedureFqn != nil && *a.ProcedureFqn != ""
+}
+
+// ProcedureId parses the PROCEDURE_FQN returned by GET_CYCLE_START_ACTION.
+func (a QuotaCycleStartAction) ProcedureId() (SchemaObjectIdentifierWithArguments, error) {
+	if !a.IsSet() {
+		return SchemaObjectIdentifierWithArguments{}, errors.New("no cycle-start action is set")
+	}
+	return ParseSchemaObjectIdentifierWithArguments(*a.ProcedureFqn)
+}
+
+// ParseQuotaProcedureArguments parses the PROCEDURE_ARGS column of GET_CUSTOM_ACTIONS and GET_CYCLE_START_ACTION.
+// The column is an ARRAY, which the driver returns as JSON (e.g. ["a", "b"]); the comma-separated form is accepted as a fallback,
+// and an empty (or NULL) value yields no arguments.
+// TODO [quota spike]: confirm the ARRAY representation against a live account.
+func ParseQuotaProcedureArguments(value string) ([]string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return []string{}, nil
+	}
+	var arguments []string
+	if err := json.Unmarshal([]byte(trimmed), &arguments); err == nil {
+		if arguments == nil {
+			arguments = []string{}
+		}
+		return arguments, nil
+	}
+	return ParseCommaSeparatedStringArray(trimmed, true), nil
 }
 
 // ParseQuotaScope parses the output of GET_QUOTA_SCOPE. JSON keys are matched case-insensitively.
@@ -130,7 +198,7 @@ func (v *quotas) DescribeDetails(ctx context.Context, id SchemaObjectIdentifier)
 	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:
 		return nil, err
-	case cycleStartAction.ProcedureId != nil:
+	case cycleStartAction.IsSet():
 		details.CycleStartAction = cycleStartAction
 	}
 
@@ -146,8 +214,15 @@ var quotaDomainsWithPlainInstances = []QuotaSharedResourceDomain{
 
 func validateQuotaSharedResourceInstance(domain QuotaSharedResourceDomain, instanceName *string, warehouse *AccountObjectIdentifier, cortexAgent *SchemaObjectIdentifier, snowflakeIntelligence *AccountObjectIdentifier, aiGateway *AccountObjectIdentifier) error {
 	var errs []error
+	if _, err := ToQuotaSharedResourceDomain(string(domain)); err != nil {
+		errs = append(errs, err)
+	}
 	if instanceName != nil && !slices.Contains(quotaDomainsWithPlainInstances, domain) {
-		errs = append(errs, fmt.Errorf("InstanceName can only be set for the %v domains, got %s", quotaDomainsWithPlainInstances, domain))
+		plainDomains := make([]string, len(quotaDomainsWithPlainInstances))
+		for i, plainDomain := range quotaDomainsWithPlainInstances {
+			plainDomains[i] = string(plainDomain)
+		}
+		errs = append(errs, fmt.Errorf("InstanceName can only be set for the %s domains, got %s", strings.Join(plainDomains, ", "), domain))
 	}
 	referenceFields := []struct {
 		name   string
@@ -177,8 +252,8 @@ func (v *QuotaRemoveSharedResourceArgs) additionalValidations() error {
 
 func (v *QuotaRemoveCustomActionsArgs) additionalValidations() error {
 	// the arguments are positional, so the procedure can only be passed together with the threshold
-	if v.Procedure != nil && v.Threshold == nil {
-		return errors.New("Procedure can only be set together with Threshold")
+	if v.ProcedureFqn != nil && v.Threshold == nil {
+		return errors.New("ProcedureFqn can only be set together with Threshold")
 	}
 	return nil
 }

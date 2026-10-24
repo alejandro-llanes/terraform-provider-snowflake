@@ -236,8 +236,8 @@ type RemoveCustomActionsQuotaRequest struct {
 }
 
 type QuotaRemoveCustomActionsArgsRequest struct {
-	Threshold *int
-	Procedure *SchemaObjectIdentifierWithArguments
+	Threshold    *int
+	ProcedureFqn *string
 }
 
 type GetCustomActionsQuotaRequest struct {

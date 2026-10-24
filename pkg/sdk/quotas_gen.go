@@ -115,7 +115,7 @@ type QuotaAddSharedResourceArgs struct {
 	AiGateway             *AccountObjectIdentifier  `ddl:"identifier,system_reference,subquery" sql:"AI GATEWAY"`
 }
 
-// RemoveSharedResourceQuotaOptions is based on https://docs.snowflake.com/en/sql-reference/classes/budget/methods/remove_shared_resource.
+// RemoveSharedResourceQuotaOptions is based on https://docs.snowflake.com/en/user-guide/budgets/per-user-quotas.
 type RemoveSharedResourceQuotaOptions struct {
 	call bool                          `ddl:"static" sql:"CALL"`
 	name SchemaObjectIdentifier        `ddl:"identifier,instance_method" sql:"REMOVE_SHARED_RESOURCE"`
@@ -364,8 +364,8 @@ type RemoveCustomActionsQuotaOptions struct {
 }
 
 type QuotaRemoveCustomActionsArgs struct {
-	Threshold *int                                 `ddl:"keyword"`
-	Procedure *SchemaObjectIdentifierWithArguments `ddl:"identifier,single_quotes"`
+	Threshold    *int    `ddl:"keyword"`
+	ProcedureFqn *string `ddl:"keyword,single_quotes"`
 }
 
 // GetCustomActionsQuotaOptions is based on https://docs.snowflake.com/en/user-guide/budgets/per-user-quotas.
@@ -387,7 +387,7 @@ type quotaCustomActionRow struct {
 
 type QuotaCustomAction struct {
 	ActionId               string
-	ProcedureId            SchemaObjectIdentifierWithArguments
+	ProcedureFqn           string
 	ProcedureArgs          []string
 	SpendStrategy          QuotaSpendStrategy
 	Threshold              int
@@ -428,14 +428,14 @@ type GetCycleStartActionQuotaOptions struct {
 type quotaCycleStartActionRow struct {
 	ActionUuid             sql.NullString `db:"ACTION_UUID"`
 	ProcedureFqn           sql.NullString `db:"PROCEDURE_FQN"`
-	ProcedureArgs          string         `db:"PROCEDURE_ARGS"`
+	ProcedureArgs          sql.NullString `db:"PROCEDURE_ARGS"`
 	AddedTimestamp         sql.NullTime   `db:"ADDED_TIMESTAMP"`
 	LastTriggeredTimestamp sql.NullTime   `db:"LAST_TRIGGERED_TIMESTAMP"`
 }
 
 type QuotaCycleStartAction struct {
 	ActionUuid             *string
-	ProcedureId            *SchemaObjectIdentifierWithArguments
+	ProcedureFqn           *string
 	ProcedureArgs          []string
 	AddedTimestamp         *time.Time
 	LastTriggeredTimestamp *time.Time

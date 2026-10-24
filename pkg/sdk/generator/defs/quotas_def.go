@@ -58,11 +58,13 @@ func quotaTagValue(name string) *g.QueryStruct {
 		WithValidation(g.ValidIdentifier, "Tag")
 }
 
+// SET_USER_TAGS overwrites the user tags; the guide's signature shows the operator as required (UNION is the documented default).
 var quotaSetUserTagsArgs = g.NewQueryStruct("SetUserTagsArgs").
 	ListQueryStructField("Tags", quotaTagValue("QuotaUserTag"), g.ListOptions().Required().MustBrackets().ArrayElements()).
 	OptionalEnum("Operator", QuotaUserTagsOperatorEnumDef, g.KeywordOptions().SingleQuotes())
 
 // EXCLUDE_USERS has two forms: ('TAG', [[<tag>, '<value>'], ...]) and ('USER', ['<user>', ...]).
+// Like INCLUDE_USERS, calls accumulate; an empty array clears the list.
 var quotaExcludeUsersArgs = g.NewQueryStruct("ExcludeUsersArgs").
 	OptionalQueryStructField(
 		"ByTag",
@@ -80,6 +82,7 @@ var quotaExcludeUsersArgs = g.NewQueryStruct("ExcludeUsersArgs").
 	).
 	WithValidation(g.ExactlyOneValueSet, "ByTag", "ByUser")
 
+// INCLUDE_USERS calls accumulate; an empty array clears the list.
 var quotaIncludeUsersArgs = g.NewQueryStruct("IncludeUsersArgs").
 	List("Users", "string", g.ListOptions().Required().MustBrackets().SingleQuotes())
 
@@ -124,11 +127,11 @@ var quotaAddCustomActionArgs = g.NewQueryStruct("AddCustomActionArgs").
 	WithValidation(g.ValidIdentifier, "Procedure")
 
 // REMOVE_CUSTOM_ACTIONS([<threshold>[, '<procedure fqn with argument types>']]); the arguments are positional.
-// TODO [quota spike]: verify that the quoted procedure name matches the actions registered with ADD_CUSTOM_ACTION.
+// The procedure is passed as the PROCEDURE_FQN string returned by GET_CUSTOM_ACTIONS, so that it matches the registered action
+// whatever its exact format is.
 var quotaRemoveCustomActionsArgs = g.NewQueryStruct("RemoveCustomActionsArgs").
 	OptionalNumber("Threshold", g.KeywordOptions()).
-	OptionalIdentifier("Procedure", g.KindOfT[sdkcommons.SchemaObjectIdentifierWithArguments](), g.IdentifierOptions().SingleQuotes()).
-	WithValidation(g.ValidIdentifierIfSet, "Procedure").
+	OptionalText("ProcedureFqn", g.KeywordOptions().SingleQuotes()).
 	WithAdditionalValidations()
 
 var quotaSetCycleStartActionArgs = g.NewQueryStruct("SetCycleStartActionArgs").
@@ -149,22 +152,25 @@ var quotaNotificationIntegrationResult = g.StructPair("quotaNotificationIntegrat
 	OptionalNumber("last_notification_time").
 	OptionalTime("added_date")
 
+// PROCEDURE_FQN is kept as returned (its exact format is not documented); QuotaCustomAction.ProcedureId() parses it.
 var quotaCustomActionResult = g.StructPair("quotaCustomActionRow", "QuotaCustomAction").
 	// uppercase column names used on purpose
 	Text("ACTION_ID").
-	SchemaObjectIdentifierWithArguments("PROCEDURE_FQN", g.WithPlainFieldName("ProcedureId")).
-	StringList("PROCEDURE_ARGS").
+	Text("PROCEDURE_FQN").
+	Field("PROCEDURE_ARGS", "string", "[]string", g.WithCustomParser("ParseQuotaProcedureArguments")).
 	Enum("SPEND_STRATEGY", QuotaSpendStrategyEnumDef).
 	Number("THRESHOLD").
 	OptionalTime("LAST_TRIGGER_ATTEMPT_TIME").
 	Time("ADDED_TIMESTAMP")
 
-// TODO [quota spike]: the guide doesn't document the columns; these mirror the BUDGET class.
+// The columns mirror the BUDGET class. Every column is nullable, so that a row of NULLs (a possible result when no action is set)
+// can be scanned; QuotaCycleStartAction.IsSet() tells the two apart.
+// TODO [quota spike]: verify the result when no cycle-start action is set (no rows vs. a row of NULLs).
 var quotaCycleStartActionResult = g.StructPair("quotaCycleStartActionRow", "QuotaCycleStartAction").
 	// uppercase column names used on purpose
 	OptionalText("ACTION_UUID").
-	OptionalSchemaObjectIdentifierWithArguments("PROCEDURE_FQN", g.WithPlainFieldName("ProcedureId")).
-	StringList("PROCEDURE_ARGS").
+	OptionalText("PROCEDURE_FQN").
+	Field("PROCEDURE_ARGS", "sql.NullString", "[]string", g.WithCustomParser("ParseQuotaProcedureArguments")).
 	OptionalTime("ADDED_TIMESTAMP").
 	OptionalTime("LAST_TRIGGERED_TIMESTAMP")
 
@@ -220,7 +226,8 @@ var quotasDef = g.NewInterface(
 	quotaSharedResourceArgs("AddSharedResourceArgs"),
 	"string",
 ).InstanceMethodOperationScalar(
-	"https://docs.snowflake.com/en/sql-reference/classes/budget/methods/remove_shared_resource",
+	quotasDocs,
+	// TODO [quota spike]: the guide only mentions REMOVE_SHARED_RESOURCE; its arguments mirror ADD_SHARED_RESOURCE and the BUDGET class.
 	"REMOVE_SHARED_RESOURCE",
 	quotaSharedResourceArgs("RemoveSharedResourceArgs"),
 	"string",

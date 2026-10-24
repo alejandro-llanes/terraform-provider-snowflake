@@ -4,6 +4,7 @@ package sdk
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/Snowflake-Labs/terraform-provider-snowflake/pkg/internal/collections"
 )
@@ -449,8 +450,8 @@ func (r *RemoveCustomActionsQuotaRequest) toOpts() *RemoveCustomActionsQuotaOpti
 		name: r.name,
 	}
 	opts.args = QuotaRemoveCustomActionsArgs{
-		Threshold: r.args.Threshold,
-		Procedure: r.args.Procedure,
+		Threshold:    r.args.Threshold,
+		ProcedureFqn: r.args.ProcedureFqn,
 	}
 	return opts
 }
@@ -465,11 +466,15 @@ func (r *GetCustomActionsQuotaRequest) toOpts() *GetCustomActionsQuotaOptions {
 func (r quotaCustomActionRow) convert() (*QuotaCustomAction, error) {
 	result := &QuotaCustomAction{
 		ActionId:       r.ActionId,
+		ProcedureFqn:   r.ProcedureFqn,
 		Threshold:      r.Threshold,
 		AddedTimestamp: r.AddedTimestamp,
 	}
-	mapStringWithMapping(&result.ProcedureId, r.ProcedureFqn, ParseSchemaObjectIdentifierWithArguments)
-	result.ProcedureArgs = ParseCommaSeparatedStringArray(r.ProcedureArgs, false)
+	if v, err := ParseQuotaProcedureArguments(r.ProcedureArgs); err != nil {
+		return nil, fmt.Errorf("parsing string: %w", err)
+	} else {
+		result.ProcedureArgs = v
+	}
 	mapStringWithMapping(&result.SpendStrategy, r.SpendStrategy, ToQuotaSpendStrategy)
 	mapNullTime(&result.LastTriggerAttemptTime, r.LastTriggerAttemptTime)
 	return result, nil
@@ -503,8 +508,14 @@ func (r *GetCycleStartActionQuotaRequest) toOpts() *GetCycleStartActionQuotaOpti
 func (r quotaCycleStartActionRow) convert() (*QuotaCycleStartAction, error) {
 	result := &QuotaCycleStartAction{}
 	mapNullString(&result.ActionUuid, r.ActionUuid)
-	mapNullStringWithMapping(&result.ProcedureId, r.ProcedureFqn, ParseSchemaObjectIdentifierWithArguments)
-	result.ProcedureArgs = ParseCommaSeparatedStringArray(r.ProcedureArgs, false)
+	mapNullString(&result.ProcedureFqn, r.ProcedureFqn)
+	if r.ProcedureArgs.Valid {
+		if v, err := ParseQuotaProcedureArguments(r.ProcedureArgs.String); err != nil {
+			return nil, fmt.Errorf("parsing string: %w", err)
+		} else {
+			result.ProcedureArgs = v
+		}
+	}
 	mapNullTime(&result.AddedTimestamp, r.AddedTimestamp)
 	mapNullTime(&result.LastTriggeredTimestamp, r.LastTriggeredTimestamp)
 	return result, nil

@@ -323,9 +323,6 @@ func (opts *RemoveCustomActionsQuotaOptions) validate() error {
 		errs = append(errs, errInvalidIdentifier("RemoveCustomActionsQuotaOptions", "name"))
 	}
 	if valueSet(opts.args) {
-		if opts.args.Procedure != nil && !ValidObjectIdentifier(opts.args.Procedure) {
-			errs = append(errs, errInvalidIdentifier("RemoveCustomActionsQuotaOptions.args", "Procedure"))
-		}
 		errs = append(errs, opts.args.additionalValidations())
 	}
 	return JoinErrors(errs...)

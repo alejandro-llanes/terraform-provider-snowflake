@@ -21,22 +21,20 @@ func (c *QuotaClient) client() sdk.Quotas {
 	return c.context.client.Quotas
 }
 
-func (c *QuotaClient) Create(t *testing.T) (*sdk.Quota, func()) {
+// Create returns the id only (like the budget client), so that tests not about SHOW don't depend on it.
+func (c *QuotaClient) Create(t *testing.T) (sdk.SchemaObjectIdentifier, func()) {
 	t.Helper()
 	return c.CreateWithId(t, c.ids.RandomSchemaObjectIdentifier())
 }
 
-func (c *QuotaClient) CreateWithId(t *testing.T, id sdk.SchemaObjectIdentifier) (*sdk.Quota, func()) {
+func (c *QuotaClient) CreateWithId(t *testing.T, id sdk.SchemaObjectIdentifier) (sdk.SchemaObjectIdentifier, func()) {
 	t.Helper()
 	ctx := context.Background()
 
 	err := c.client().Create(ctx, sdk.NewCreateQuotaRequest(id))
 	require.NoError(t, err)
 
-	quota, err := c.client().ShowByID(ctx, id)
-	require.NoError(t, err)
-
-	return quota, c.DropFunc(t, id)
+	return id, c.DropFunc(t, id)
 }
 
 func (c *QuotaClient) DropFunc(t *testing.T, id sdk.SchemaObjectIdentifier) func() {
