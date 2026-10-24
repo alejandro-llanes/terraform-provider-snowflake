@@ -2,7 +2,6 @@ package sdk
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -142,7 +141,12 @@ func init() {
 				opts.args.Domain = QuotaSharedResourceDomainWarehouse
 				opts.args.InstanceName = new("SNOWADHOC")
 			},
-			errors.New("InstanceName can only be set for the [AI FUNCTION CORTEX CODE] domains, got WAREHOUSE"),
+			errors.New("InstanceName can only be set for the AI FUNCTION, CORTEX CODE domains, got WAREHOUSE"),
+		).
+		withAdditionalValidationCase(
+			"validation_AddSharedResource_domainNotSet",
+			func(opts *AddSharedResourceQuotaOptions) { opts.args.Domain = "" },
+			errors.New("invalid quota shared resource domain"),
 		).
 		withAdditionalValidationCase(
 			"validation_AddSharedResource_referenceForOtherDomain",
@@ -165,6 +169,14 @@ func init() {
 			"sql_RemoveSharedResource_instance",
 			func(opts *RemoveSharedResourceQuotaOptions) { opts.args.CortexAgent = &cortexAgentId },
 			"CALL %s!REMOVE_SHARED_RESOURCE ('CORTEX AGENT', (SELECT SYSTEM$REFERENCE('CORTEX AGENT', '%s')))", id.FullyQualifiedName(), cortexAgentId.FullyQualifiedName(),
+		).
+		withAdditionalSqlCasef(
+			"sql_RemoveSharedResource_warehouse",
+			func(opts *RemoveSharedResourceQuotaOptions) {
+				opts.args.Domain = QuotaSharedResourceDomainWarehouse
+				opts.args.Warehouse = &warehouseId
+			},
+			"CALL %s!REMOVE_SHARED_RESOURCE ('WAREHOUSE', (SELECT SYSTEM$REFERENCE('WAREHOUSE', '%s')))", id.FullyQualifiedName(), warehouseId.FullyQualifiedName(),
 		).
 		withAdditionalValidationCase(
 			"validation_RemoveSharedResource_referenceForOtherDomain",
@@ -295,6 +307,11 @@ func init() {
 		).
 		withAdditionalSqlCasef(
 			"sql_SetBlockEnforcementEnabled_all",
+			func(opts *SetBlockEnforcementEnabledQuotaOptions) { opts.args.NotifyUsers = new(true) },
+			"CALL %s!SET_BLOCK_ENFORCEMENT_ENABLED (true, true)", id.FullyQualifiedName(),
+		).
+		withAdditionalSqlCasef(
+			"sql_SetBlockEnforcementEnabled_disabled",
 			func(opts *SetBlockEnforcementEnabledQuotaOptions) {
 				opts.args.Enabled = false
 				opts.args.NotifyUsers = new(false)
@@ -423,14 +440,16 @@ func init() {
 			"sql_RemoveCustomActions_procedure",
 			func(opts *RemoveCustomActionsQuotaOptions) {
 				opts.args.Threshold = new(100)
-				opts.args.Procedure = &procedureId
+				opts.args.ProcedureFqn = new("COST_MGMT_DB.ACTIONS.DISABLE_USERS_BY_ID(VARCHAR)")
 			},
-			"CALL %s!REMOVE_CUSTOM_ACTIONS (100, '%s')", id.FullyQualifiedName(), strings.ReplaceAll(procedureId.FullyQualifiedName(), `"`, `\"`),
+			"CALL %s!REMOVE_CUSTOM_ACTIONS (100, 'COST_MGMT_DB.ACTIONS.DISABLE_USERS_BY_ID(VARCHAR)')", id.FullyQualifiedName(),
 		).
 		withAdditionalValidationCase(
 			"validation_RemoveCustomActions_procedureWithoutThreshold",
-			func(opts *RemoveCustomActionsQuotaOptions) { opts.args.Procedure = &procedureId },
-			errors.New("Procedure can only be set together with Threshold"),
+			func(opts *RemoveCustomActionsQuotaOptions) {
+				opts.args.ProcedureFqn = new("COST_MGMT_DB.ACTIONS.DISABLE_USERS_BY_ID(VARCHAR)")
+			},
+			errors.New("ProcedureFqn can only be set together with Threshold"),
 		)
 
 	quotasTests.GetCustomActions.
@@ -486,8 +505,8 @@ func TestParseQuotaScope(t *testing.T) {
 		}`)
 		require.NoError(t, err)
 
-		assert.Equal(t, []QuotaScopeUser{{UserId: 3, UserName: "CAROL"}}, scope.ExcludedUsers)
-		assert.Equal(t, []QuotaScopeUser{{UserId: 1, UserName: "ALICE"}, {UserId: 2, UserName: "BOB"}}, scope.IncludedUsers)
+		assert.Equal(t, []QuotaScopeUser{{UserId: "3", UserName: "CAROL"}}, scope.ExcludedUsers)
+		assert.Equal(t, []QuotaScopeUser{{UserId: "1", UserName: "ALICE"}, {UserId: "2", UserName: "BOB"}}, scope.IncludedUsers)
 		require.Len(t, scope.SharedResources, 2)
 		assert.True(t, scope.SharedResources[0].IsWholeDomain())
 		assert.False(t, scope.SharedResources[1].IsWholeDomain())
@@ -497,6 +516,29 @@ func TestParseQuotaScope(t *testing.T) {
 		require.Len(t, scope.UserTags.Tags, 1)
 		assert.Equal(t, NewSchemaObjectIdentifier("COST_MGMT_DB", "TAGS", "COST_CENTER"), scope.UserTags.Tags[0].TagId())
 		assert.Equal(t, []string{"finance"}, scope.UserTags.Tags[0].TagValues)
+	})
+
+	t.Run("guide's sample output shape", func(t *testing.T) {
+		// the guide renders the domain with an underscore, the whole-domain name in brackets, lowercase tag type,
+		// the tag database and schema as typed in the reference, and the tag value in uppercase
+		scope, err := ParseQuotaScope(`{
+			"excluded_users": [],
+			"included_users": [{"user_id": "101", "user_name": "ALICE"}],
+			"shared_resources": [{"domain": "CORTEX_AGENT", "id": -1, "name": "[ALL-AGENTS]"}],
+			"user_tags": {
+				"operator": "UNION",
+				"tags": [{"type": "tag", "tag_database": "cost_mgmt_db", "tag_schema": "tags", "tag_key": "COST_CENTER", "tag_values": ["FINANCE"]}]
+			}
+		}`)
+		require.NoError(t, err)
+
+		require.Len(t, scope.SharedResources, 1)
+		assert.True(t, scope.SharedResources[0].IsWholeDomain())
+		domain, err := scope.SharedResources[0].NormalizedDomain()
+		require.NoError(t, err)
+		assert.Equal(t, QuotaSharedResourceDomainCortexAgent, domain)
+		assert.Equal(t, "101", scope.IncludedUsers[0].UserId.String())
+		assert.Equal(t, NewSchemaObjectIdentifier("cost_mgmt_db", "tags", "COST_CENTER"), scope.UserTags.Tags[0].TagId())
 	})
 
 	t.Run("empty scope", func(t *testing.T) {
@@ -513,28 +555,68 @@ func TestParseQuotaScope(t *testing.T) {
 }
 
 func TestParseQuotaConfig(t *testing.T) {
+	limit := func(t *testing.T, config *QuotaConfig, cycle QuotaCycle) *float64 {
+		t.Helper()
+		value, err := config.PerUserLimitFor(cycle)
+		require.NoError(t, err)
+		return value
+	}
+
 	t.Run("all keys, upper-cased as in the guide", func(t *testing.T) {
 		// TODO [quota spike]: replace with a captured GET_CONFIG output.
-		config, err := ParseQuotaConfig(`{"PER_USER_LIMIT": 1000, "PER_USER_LIMIT_WEEKLY": 500, "PER_USER_LIMIT_DAILY": 120.5, "BLOCK_ENFORCEMENT_ENABLED": true}`)
+		config, err := ParseQuotaConfig(`{"PER_USER_LIMIT": 1000, "PER_USER_LIMIT_WEEKLY": "500", "PER_USER_LIMIT_DAILY": 120.5, "BLOCK_ENFORCEMENT_ENABLED": true}`)
 		require.NoError(t, err)
-		assert.Equal(t, new(1000.0), config.PerUserLimit)
-		assert.Equal(t, new(500.0), config.PerUserLimitWeekly)
-		assert.Equal(t, new(120.5), config.PerUserLimitDaily)
+		assert.Equal(t, new(1000.0), limit(t, config, QuotaCycleMonthly))
+		assert.Equal(t, new(500.0), limit(t, config, QuotaCycleWeekly))
+		assert.Equal(t, new(120.5), limit(t, config, QuotaCycleDaily))
 		assert.Equal(t, new(true), config.BlockEnforcementEnabled)
 	})
 
 	t.Run("no limits set", func(t *testing.T) {
 		config, err := ParseQuotaConfig(`{"PER_USER_LIMIT": null}`)
 		require.NoError(t, err)
-		assert.Nil(t, config.PerUserLimit)
-		assert.Nil(t, config.PerUserLimitWeekly)
+		assert.Nil(t, limit(t, config, QuotaCycleMonthly))
+		assert.Nil(t, limit(t, config, QuotaCycleWeekly))
 		assert.Nil(t, config.BlockEnforcementEnabled)
+	})
+
+	t.Run("non-numeric limit", func(t *testing.T) {
+		_, err := ParseQuotaConfig(`{"PER_USER_LIMIT": "unlimited"}`)
+		require.ErrorContains(t, err, "failed to parse quota config")
+	})
+
+	t.Run("limit as a numeric string", func(t *testing.T) {
+		config, err := ParseQuotaConfig(`{"per_user_limit_daily": "60"}`)
+		require.NoError(t, err)
+		assert.Equal(t, new(60.0), limit(t, config, QuotaCycleDaily))
 	})
 
 	t.Run("invalid json", func(t *testing.T) {
 		_, err := ParseQuotaConfig(`not json`)
 		require.ErrorContains(t, err, "failed to parse quota config")
 	})
+}
+
+func TestParseQuotaProcedureArguments(t *testing.T) {
+	testCases := []struct {
+		input    string
+		expected []string
+	}{
+		{input: "", expected: []string{}},
+		{input: "[]", expected: []string{}},
+		{input: "null", expected: []string{}},
+		{input: `["a", "b"]`, expected: []string{"a", "b"}},
+		{input: "[\n  \"a\"\n]", expected: []string{"a"}},
+		{input: "[a, b]", expected: []string{"a", "b"}},
+		{input: "['a', 'b']", expected: []string{"a", "b"}},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.input, func(t *testing.T) {
+			arguments, err := ParseQuotaProcedureArguments(tc.input)
+			require.NoError(t, err)
+			assert.Equal(t, tc.expected, arguments)
+		})
+	}
 }
 
 func TestNewQuotaSharedResourceArgsRequestFromInstance(t *testing.T) {
@@ -547,6 +629,7 @@ func TestNewQuotaSharedResourceArgsRequestFromInstance(t *testing.T) {
 		{domain: QuotaSharedResourceDomainAiFunction, instance: "AI_CLASSIFY", expected: QuotaAddSharedResourceArgsRequest{Domain: QuotaSharedResourceDomainAiFunction, InstanceName: new("AI_CLASSIFY")}},
 		{domain: QuotaSharedResourceDomainCortexCode, instance: "CORTEX_CODE_CLI", expected: QuotaAddSharedResourceArgsRequest{Domain: QuotaSharedResourceDomainCortexCode, InstanceName: new("CORTEX_CODE_CLI")}},
 		{domain: QuotaSharedResourceDomainWarehouse, instance: "SNOWADHOC", expected: QuotaAddSharedResourceArgsRequest{Domain: QuotaSharedResourceDomainWarehouse, Warehouse: new(NewAccountObjectIdentifier("SNOWADHOC"))}},
+		{domain: QuotaSharedResourceDomainWarehouse, instance: `"snow adhoc"`, expected: QuotaAddSharedResourceArgsRequest{Domain: QuotaSharedResourceDomainWarehouse, Warehouse: new(NewAccountObjectIdentifier("snow adhoc"))}},
 		{domain: QuotaSharedResourceDomainCortexAgent, instance: `"DB"."SCH"."AGENT"`, expected: QuotaAddSharedResourceArgsRequest{Domain: QuotaSharedResourceDomainCortexAgent, CortexAgent: new(NewSchemaObjectIdentifier("DB", "SCH", "AGENT"))}},
 		{domain: QuotaSharedResourceDomainSnowflakeIntelligence, instance: "MY_SI", expected: QuotaAddSharedResourceArgsRequest{Domain: QuotaSharedResourceDomainSnowflakeIntelligence, SnowflakeIntelligence: new(NewAccountObjectIdentifier("MY_SI"))}},
 		{domain: QuotaSharedResourceDomainAiGateway, instance: "SNOWFLAKE", expected: QuotaAddSharedResourceArgsRequest{Domain: QuotaSharedResourceDomainAiGateway, AiGateway: new(NewAccountObjectIdentifier("SNOWFLAKE"))}},

@@ -566,9 +566,11 @@ func (b sqlBuilder) parseFieldSlice(field reflect.StructField, value reflect.Val
 					return nil, err
 				}
 			}
-			// array_elements classifier: each element is rendered as an array literal, e.g. [a, b]
+			// array_elements classifier: each element is rendered as an array literal, e.g. [a, b]; empty elements are skipped
 			if hasDdlClassifier(ddlTagParts, arrayElementsClassifier) {
-				listClauses = append(listClauses, sqlListClause{clauses: structClauses, cm: Comma, bm: Brackets})
+				if len(structClauses) > 0 {
+					listClauses = append(listClauses, sqlListClause{clauses: structClauses, cm: Comma, bm: Brackets})
+				}
 				continue
 			}
 			// each element of the slice needs to be pre-rendered before the commas are added.
@@ -842,10 +844,18 @@ type sqlSystemReferenceClause struct {
 	inSubquery bool
 }
 
+// quoteSystemReferenceArg wraps an argument in single quotes, escaping only the characters that would end the string literal
+// (double quotes in fully qualified names are kept as they are).
+func quoteSystemReferenceArg(arg string) string {
+	arg = strings.ReplaceAll(arg, `\`, `\\`)
+	arg = strings.ReplaceAll(arg, `'`, `\'`)
+	return fmt.Sprintf("'%s'", arg)
+}
+
 func (v sqlSystemReferenceClause) String() (string, error) {
-	args := []string{fmt.Sprintf("'%s'", v.objectType), fmt.Sprintf("'%s'", v.object.FullyQualifiedName())}
+	args := []string{quoteSystemReferenceArg(v.objectType), quoteSystemReferenceArg(v.object.FullyQualifiedName())}
 	for _, arg := range v.extraArgs {
-		args = append(args, fmt.Sprintf("'%s'", arg))
+		args = append(args, quoteSystemReferenceArg(arg))
 	}
 	s := fmt.Sprintf("SYSTEM$REFERENCE(%s)", strings.Join(args, ", "))
 	if v.inSubquery {

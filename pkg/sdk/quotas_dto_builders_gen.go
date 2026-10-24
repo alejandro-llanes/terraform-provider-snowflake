@@ -484,8 +484,8 @@ func (s *QuotaRemoveCustomActionsArgsRequest) WithThreshold(threshold int) *Quot
 	return s
 }
 
-func (s *QuotaRemoveCustomActionsArgsRequest) WithProcedure(procedure SchemaObjectIdentifierWithArguments) *QuotaRemoveCustomActionsArgsRequest {
-	s.Procedure = &procedure
+func (s *QuotaRemoveCustomActionsArgsRequest) WithProcedureFqn(procedureFqn string) *QuotaRemoveCustomActionsArgsRequest {
+	s.ProcedureFqn = &procedureFqn
 	return s
 }
 

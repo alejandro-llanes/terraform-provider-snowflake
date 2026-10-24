@@ -679,6 +679,16 @@ func TestBuilder_systemReferenceInvocation(t *testing.T) {
 		assert.Equal(t, "(SELECT SYSTEM$REFERENCE('WAREHOUSE', '"+id.FullyQualifiedName()+"'))", sql)
 	})
 
+	t.Run("system reference: quotes and backslashes in the name are escaped", func(t *testing.T) {
+		id := NewAccountObjectIdentifier(`it's\here`)
+		s := &struct {
+			name AccountObjectIdentifier `ddl:"identifier,system_reference" sql:"WAREHOUSE"`
+		}{name: id}
+		sql, err := structToSQL(s)
+		require.NoError(t, err)
+		assert.Equal(t, `SYSTEM$REFERENCE('WAREHOUSE', '"it\'s\\here"')`, sql)
+	})
+
 	t.Run("system reference: empty identifier is omitted", func(t *testing.T) {
 		s := &struct {
 			name *AccountObjectIdentifier `ddl:"identifier,system_reference,subquery" sql:"WAREHOUSE"`
@@ -776,6 +786,39 @@ func TestBuilder_arrayLiterals(t *testing.T) {
 		sql, err := structToSQL(s)
 		require.NoError(t, err)
 		assert.Equal(t, "[]", sql)
+	})
+
+	t.Run("empty list of nested arrays with brackets is omitted", func(t *testing.T) {
+		type pair struct {
+			Key string `ddl:"keyword,single_quotes"`
+		}
+		s := &struct {
+			pairs []pair `ddl:"list,brackets,array_elements"`
+		}{}
+		sql, err := structToSQL(s)
+		require.NoError(t, err)
+		assert.Equal(t, "", sql)
+	})
+
+	t.Run("nested array elements rendering empty are skipped", func(t *testing.T) {
+		type pair struct {
+			Key *string `ddl:"keyword,single_quotes"`
+		}
+		s := &struct {
+			pairs []pair `ddl:"list,must_brackets,array_elements"`
+		}{pairs: []pair{{}, {Key: String("a")}, {}}}
+		sql, err := structToSQL(s)
+		require.NoError(t, err)
+		assert.Equal(t, "[['a']]", sql)
+	})
+
+	t.Run("must brackets and must parentheses on the same field", func(t *testing.T) {
+		s := &struct {
+			values []string `ddl:"list,must_brackets,must_parentheses,single_quotes"`
+		}{}
+		sql, err := structToSQL(s)
+		require.NoError(t, err)
+		assert.Equal(t, "([])", sql)
 	})
 
 	t.Run("nested arrays with a system reference in a subquery", func(t *testing.T) {
