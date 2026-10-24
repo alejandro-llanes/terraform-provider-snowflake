@@ -26,6 +26,28 @@ for changes required after enabling given [Snowflake BCR Bundle](https://docs.sn
 > [!TIP]
 > If you're still using the `Snowflake-Labs/snowflake` source, see [Upgrading from Snowflake-Labs Provider](./SNOWFLAKEDB_MIGRATION.md) to upgrade to the snowflakedb namespace.
 
+## v2.22.x ➞ v2.23.0
+
+### *(new feature)* New quota resource and data source
+
+#### Resource
+
+We have added a new preview resource for managing [per-user quotas](https://docs.snowflake.com/en/user-guide/budgets/per-user-quotas) (`SNOWFLAKE.CORE.QUOTA`): [snowflake_quota](https://registry.terraform.io/providers/snowflakedb/snowflake/latest/docs/resources/quota). It manages the monitored domains (`WAREHOUSE`, `AI FUNCTION`, `CORTEX AGENT`, `CORTEX CODE`, `SNOWFLAKE INTELLIGENCE`, and `AI GATEWAY`), the users the quota applies to, per-user limits for the monthly, weekly, and daily cycles, block enforcement, notifications, and custom and cycle-start actions.
+
+Quotas have no `ALTER` command, so the provider applies changes by calling the quota's instance methods. These calls are not transactional: if one of them fails, the quota is left partially configured and marked as tainted.
+
+`admin_emails`, `notify_blocked_users`, and the `cycle` of notification thresholds can't be read from Snowflake, so changes made to them outside Terraform are not detected, and they are not imported.
+
+This feature will be marked as stable in future releases. To use it, add `snowflake_quota_resource` to the `preview_features_enabled` field in the provider configuration.
+
+#### Data source
+
+We have added a new preview data source for per-user quotas: [snowflake_quotas](https://registry.terraform.io/providers/snowflakedb/snowflake/latest/docs/data-sources/quotas). It supports filtering with `like`, `in`, and `limit`.
+
+This feature will be marked as stable in future releases. To use it, add `snowflake_quotas_datasource` to the `preview_features_enabled` field in the provider configuration.
+
+No changes are required for existing configurations unless you want to adopt any of these preview features with Terraform.
+
 ## v2.21.x ➞ v2.22.0
 
 ### *(new feature)* `optimized_refresh` and `rpo_assurance` on `snowflake_failover_group`
