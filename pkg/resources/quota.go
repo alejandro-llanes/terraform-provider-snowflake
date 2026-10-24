@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/Snowflake-Labs/terraform-provider-snowflake/pkg/helpers"
 	"github.com/Snowflake-Labs/terraform-provider-snowflake/pkg/internal/provider"
@@ -26,6 +27,8 @@ func quotaEnumValuesDescription[T ~string](values []T) string {
 	return fmt.Sprintf("Valid values are (case-sensitive): %s.", possibleValuesListed(values))
 }
 
+// quotaEnumValidation is case-sensitive on purpose: most enums below live inside sets, where DiffSuppressFunc doesn't apply,
+// so a value normalized on read would otherwise produce a permanent diff against a differently cased configuration.
 func quotaEnumValidation[T ~string](values []T) schema.SchemaValidateDiagFunc {
 	allowed := make([]string, len(values))
 	for i, value := range values {
@@ -72,7 +75,7 @@ func quotaPerUserLimitSchema(cycle string) *schema.Schema {
 		Default:      IntDefault,
 		ValidateFunc: validation.IntAtLeast(0),
 		// TODO [quota spike]: verify whether limits accept decimal credit values.
-		Description: fmt.Sprintf("Credit limit applied to each user in scope for every %s cycle (UTC-aligned). If not set (or set to %d), the limit is unset.", cycle, IntDefault),
+		Description: fmt.Sprintf("Credit limit applied to each user in scope for every %s cycle (UTC-aligned). If not set, the limit is unset.", cycle),
 	}
 }
 
@@ -157,21 +160,22 @@ var quotaSchema = map[string]*schema.Schema{
 		},
 	},
 	"excluded_user_tag": func() *schema.Schema {
-		s := quotaTagValueSchema("Excludes users with the given tag and value from the quota.")
+		// TODO [quota spike]: GET_QUOTA_SCOPE doesn't tell excluded tags apart from included ones; until it does, external changes are not detected.
+		s := quotaTagValueSchema(externalChangesNotDetectedFieldDescription("Excludes users with the given tag and value from the quota."))
 		s.Optional = true
 		return s
 	}(),
 	"included_users": {
 		Type:        schema.TypeSet,
 		Optional:    true,
-		Elem:        &schema.Schema{Type: schema.TypeString},
-		Description: "Names of individual users the quota applies to.",
+		Elem:        &schema.Schema{Type: schema.TypeString, DiffSuppressFunc: suppressIdentifierQuoting},
+		Description: relatedResourceDescription("Names of individual users the quota applies to.", resources.User),
 	},
 	"excluded_users": {
 		Type:        schema.TypeSet,
 		Optional:    true,
-		Elem:        &schema.Schema{Type: schema.TypeString},
-		Description: "Names of individual users excluded from the quota.",
+		Elem:        &schema.Schema{Type: schema.TypeString, DiffSuppressFunc: suppressIdentifierQuoting},
+		Description: relatedResourceDescription("Names of individual users excluded from the quota.", resources.User),
 	},
 	"per_user_limit_monthly": quotaPerUserLimitSchema("monthly"),
 	"per_user_limit_weekly":  quotaPerUserLimitSchema("weekly"),
@@ -225,10 +229,14 @@ var quotaSchema = map[string]*schema.Schema{
 		},
 	},
 	"notification_integrations": {
-		Type:        schema.TypeSet,
-		Optional:    true,
-		Elem:        &schema.Schema{Type: schema.TypeString, ValidateDiagFunc: IsValidIdentifier[sdk.AccountObjectIdentifier]()},
-		Description: "Notification integrations used to send admin summary notifications. USAGE on each integration must be granted to the SNOWFLAKE application.",
+		Type:     schema.TypeSet,
+		Optional: true,
+		Elem: &schema.Schema{
+			Type:             schema.TypeString,
+			ValidateDiagFunc: IsValidIdentifier[sdk.AccountObjectIdentifier](),
+			DiffSuppressFunc: suppressIdentifierQuoting,
+		},
+		Description: relatedResourceDescription("Notification integrations used to send admin summary notifications. USAGE on each integration must be granted to the SNOWFLAKE application.", resources.EmailNotificationIntegration),
 	},
 	"admin_emails": {
 		Type:     schema.TypeSet,
@@ -333,6 +341,7 @@ func Quota() *schema.Resource {
 
 		CustomizeDiff: TrackingCustomDiffWrapper(resources.Quota, customdiff.All(
 			validateQuotaDomains,
+			validateQuotaNotificationThresholds,
 			ComputedIfAnyAttributeChanged(quotaSchema, ShowOutputAttributeName, "comment"),
 			// Set and list blocks are excluded from describe_output invalidation, because they produce false-positive
 			// HasChange results in ComputedIfAnyAttributeChanged. describe_output is still refreshed after every apply.
@@ -362,6 +371,10 @@ func validateQuotaDomains(_ context.Context, d *schema.ResourceDiff, _ any) erro
 	var monitorsWarehouses, monitorsAi bool
 	for _, raw := range d.Get("shared_resource").(*schema.Set).List() {
 		resource := raw.(map[string]any)
+		if resource["domain"].(string) == "" {
+			// an unknown domain (e.g. a reference to another resource) is read as an empty string; it is validated at apply time
+			continue
+		}
 		domain, err := sdk.ToQuotaSharedResourceDomain(resource["domain"].(string))
 		if err != nil {
 			errs = append(errs, err)
@@ -383,6 +396,23 @@ func validateQuotaDomains(_ context.Context, d *schema.ResourceDiff, _ any) erro
 		errs = append(errs, errors.New("block_enforcement_enabled applies only to the AI domains and can't be used with the WAREHOUSE domain"))
 	}
 	return errors.Join(errs...)
+}
+
+// validateQuotaNotificationThresholds rejects thresholds Snowflake can't tell apart: it keeps one per (threshold, spend strategy).
+func validateQuotaNotificationThresholds(_ context.Context, d *schema.ResourceDiff, _ any) error {
+	if !d.NewValueKnown("notification_threshold") {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	for _, raw := range d.Get("notification_threshold").(*schema.Set).List() {
+		threshold := raw.(map[string]any)
+		key := fmt.Sprintf("%d%% %s", threshold["threshold"].(int), strings.ToUpper(threshold["spend_strategy"].(string)))
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("notification_threshold: Snowflake keeps one threshold per threshold and spend_strategy, but %s is defined more than once", key)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
 }
 
 func CreateQuota(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
@@ -443,7 +473,10 @@ func ReadQuota(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagn
 	if err != nil {
 		return diag.FromErr(err)
 	}
-	remote := quotaConfigurationFromDetails(details, current)
+	remote, err := quotaConfigurationFromDetails(details, current)
+	if err != nil {
+		return diag.FromErr(err)
+	}
 
 	comment := ""
 	if quota.Comment != nil {
@@ -462,6 +495,9 @@ func ReadQuota(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagn
 		d.Set("per_user_limit_weekly", remote.perUserLimit(sdk.QuotaCycleWeekly)),
 		d.Set("per_user_limit_daily", remote.perUserLimit(sdk.QuotaCycleDaily)),
 		d.Set("block_enforcement_enabled", remote.blockEnforcementEnabled),
+		// not readable from Snowflake: kept from the configuration, and set to their defaults on import
+		d.Set("notify_blocked_users", remote.notifyBlockedUsers),
+		d.Set("admin_emails", remote.adminEmails),
 		d.Set("notification_threshold", remote.notificationThresholdsToSchema()),
 		d.Set("notification_integrations", remote.notificationIntegrationsToSchema()),
 		d.Set("custom_action", remote.customActionsToSchema()),
@@ -492,18 +528,39 @@ func UpdateQuota(ctx context.Context, d *schema.ResourceData, meta any) diag.Dia
 	}
 
 	if err := reconcileQuota(ctx, client, id, previous, desired); err != nil {
-		return diag.FromErr(fmt.Errorf("error updating quota %v, err = %w", id.FullyQualifiedName(), err))
+		// On a failed update the state is saved with the planned values. The values that can be read back are corrected by the
+		// next refresh; the ones that can't are restored here, so that the next plan applies them again.
+		var errs []error
+		for _, key := range []string{"admin_emails", "notify_blocked_users", "excluded_user_tag", "notification_threshold"} {
+			previousValue, _ := d.GetChange(key)
+			errs = append(errs, d.Set(key, previousValue))
+		}
+		return diag.FromErr(errors.Join(fmt.Errorf("error updating quota %v, err = %w", id.FullyQualifiedName(), err), errors.Join(errs...)))
 	}
 
 	return ReadQuota(ctx, d, meta)
 }
 
 // reconcileQuota issues the instance method calls that turn the previous quota configuration into the desired one.
-// Removals go first, so that e.g. switching between the WAREHOUSE and AI domains works, and block enforcement goes last,
-// so that users aren't blocked by a partially applied configuration. The calls aren't transactional: if one fails,
-// the quota is left partially configured and the next apply continues from there.
+// Removals go first, so that e.g. switching between the WAREHOUSE and AI domains works. Block enforcement is disabled before
+// any other change (it can't be combined with the WAREHOUSE domain) and enabled after all of them, so that users aren't blocked
+// by a partially applied configuration. The calls aren't transactional: if one fails, the quota is left partially configured.
 func reconcileQuota(ctx context.Context, client *sdk.Client, id sdk.SchemaObjectIdentifier, previous *quotaConfiguration, desired *quotaConfiguration) error {
 	quotas := client.Quotas
+
+	blockEnforcementChanged := previous.blockEnforcementEnabled != desired.blockEnforcementEnabled || previous.notifyBlockedUsers != desired.notifyBlockedUsers
+	setBlockEnforcement := func() error {
+		args := sdk.NewQuotaSetBlockEnforcementEnabledArgsRequest(desired.blockEnforcementEnabled).WithNotifyUsers(desired.notifyBlockedUsers)
+		if _, err := quotas.SetBlockEnforcementEnabled(ctx, sdk.NewSetBlockEnforcementEnabledQuotaRequest(id, *args)); err != nil {
+			return fmt.Errorf("setting block enforcement: %w", err)
+		}
+		return nil
+	}
+	if blockEnforcementChanged && !desired.blockEnforcementEnabled {
+		if err := setBlockEnforcement(); err != nil {
+			return err
+		}
+	}
 
 	// REMOVE_CUSTOM_ACTIONS(<threshold>, <procedure>) removes the actions for both spend strategies,
 	// so the desired actions sharing a removed (threshold, procedure) pair are added back afterwards.
@@ -512,11 +569,22 @@ func reconcileQuota(ctx context.Context, client *sdk.Client, id sdk.SchemaObject
 	for _, action := range removedActions {
 		removedActionGroups[action.removalKey()] = action
 	}
-	for _, key := range slices.Sorted(maps.Keys(removedActionGroups)) {
-		action := removedActionGroups[key]
-		args := sdk.NewQuotaRemoveCustomActionsArgsRequest().WithThreshold(action.threshold).WithProcedure(action.procedure)
-		if _, err := quotas.RemoveCustomActions(ctx, sdk.NewRemoveCustomActionsQuotaRequest(id, *args)); err != nil {
-			return fmt.Errorf("removing custom actions at %d%% for %s: %w", action.threshold, action.procedure.FullyQualifiedName(), err)
+	if len(removedActionGroups) > 0 {
+		// the registered actions are read first, so that the procedure is passed back exactly as Snowflake returns it
+		registered, err := quotas.GetCustomActions(ctx, sdk.NewGetCustomActionsQuotaRequest(id))
+		if err != nil {
+			return fmt.Errorf("reading custom actions: %w", err)
+		}
+		for _, key := range slices.Sorted(maps.Keys(removedActionGroups)) {
+			action := removedActionGroups[key]
+			procedureFqn, found := quotaRegisteredProcedureFqn(registered, action)
+			if !found {
+				continue
+			}
+			args := sdk.NewQuotaRemoveCustomActionsArgsRequest().WithThreshold(action.threshold).WithProcedureFqn(procedureFqn)
+			if _, err := quotas.RemoveCustomActions(ctx, sdk.NewRemoveCustomActionsQuotaRequest(id, *args)); err != nil {
+				return fmt.Errorf("removing custom actions at %d%% for %s: %w", action.threshold, action.procedure.FullyQualifiedName(), err)
+			}
 		}
 	}
 	for _, action := range desired.customActions {
@@ -561,41 +629,56 @@ func reconcileQuota(ctx context.Context, client *sdk.Client, id sdk.SchemaObject
 		}
 	}
 
+	// SET_USER_TAGS overwrites the tags, so the whole desired list is sent; the operator is always passed (UNION is Snowflake's default).
 	if !previous.userTagsEqual(desired) {
 		// TODO [quota spike]: verify that an empty array clears the user tags.
 		tags := make([]sdk.QuotaUserTagRequest, len(desired.userTags))
 		for i, tag := range desired.userTags {
 			tags[i] = *sdk.NewQuotaUserTagRequest(tag.tag, tag.value)
 		}
-		args := sdk.NewQuotaSetUserTagsArgsRequest(tags)
+		operator := sdk.QuotaUserTagsOperatorUnion
 		if desired.userTagsOperator != nil {
-			args.WithOperator(*desired.userTagsOperator)
+			operator = *desired.userTagsOperator
 		}
+		args := sdk.NewQuotaSetUserTagsArgsRequest(tags).WithOperator(operator)
 		if _, err := quotas.SetUserTags(ctx, sdk.NewSetUserTagsQuotaRequest(id, *args)); err != nil {
 			return fmt.Errorf("setting user tags: %w", err)
 		}
 	}
-	if !quotaKeysEqual(previous.excludedUserTags, desired.excludedUserTags, quotaTagValue.key) {
-		tags := make([]sdk.QuotaExcludedUserTagRequest, len(desired.excludedUserTags))
-		for i, tag := range desired.excludedUserTags {
-			tags[i] = *sdk.NewQuotaExcludedUserTagRequest(tag.tag, tag.value)
+	// INCLUDE_USERS and EXCLUDE_USERS accumulate; see quotaReconcileAccumulatingList.
+	excludeUsersByTag := func(tags []quotaTagValue) error {
+		requests := make([]sdk.QuotaExcludedUserTagRequest, len(tags))
+		for i, tag := range tags {
+			requests[i] = *sdk.NewQuotaExcludedUserTagRequest(tag.tag, tag.value)
 		}
-		args := sdk.NewQuotaExcludeUsersArgsRequest().WithByTag(*sdk.NewQuotaExcludeUsersByTagRequest(tags))
+		args := sdk.NewQuotaExcludeUsersArgsRequest().WithByTag(*sdk.NewQuotaExcludeUsersByTagRequest(requests))
 		if _, err := quotas.ExcludeUsers(ctx, sdk.NewExcludeUsersQuotaRequest(id, *args)); err != nil {
 			return fmt.Errorf("excluding users by tag: %w", err)
 		}
+		return nil
 	}
-	if !quotaKeysEqual(previous.includedUsers, desired.includedUsers, quotaUserKey) {
-		args := sdk.NewQuotaIncludeUsersArgsRequest(desired.includedUsers)
+	if err := quotaReconcileAccumulatingList(previous.excludedUserTags, desired.excludedUserTags, quotaTagValue.key, excludeUsersByTag); err != nil {
+		return err
+	}
+	includeUsers := func(users []string) error {
+		args := sdk.NewQuotaIncludeUsersArgsRequest(users)
 		if _, err := quotas.IncludeUsers(ctx, sdk.NewIncludeUsersQuotaRequest(id, *args)); err != nil {
 			return fmt.Errorf("including users: %w", err)
 		}
+		return nil
 	}
-	if !quotaKeysEqual(previous.excludedUsers, desired.excludedUsers, quotaUserKey) {
-		args := sdk.NewQuotaExcludeUsersArgsRequest().WithByUser(*sdk.NewQuotaExcludeUsersByUserRequest(desired.excludedUsers))
+	if err := quotaReconcileAccumulatingList(previous.includedUsers, desired.includedUsers, quotaUserKey, includeUsers); err != nil {
+		return err
+	}
+	excludeUsers := func(users []string) error {
+		args := sdk.NewQuotaExcludeUsersArgsRequest().WithByUser(*sdk.NewQuotaExcludeUsersByUserRequest(users))
 		if _, err := quotas.ExcludeUsers(ctx, sdk.NewExcludeUsersQuotaRequest(id, *args)); err != nil {
 			return fmt.Errorf("excluding users: %w", err)
 		}
+		return nil
+	}
+	if err := quotaReconcileAccumulatingList(previous.excludedUsers, desired.excludedUsers, quotaUserKey, excludeUsers); err != nil {
+		return err
 	}
 
 	for _, cycle := range sdk.AllQuotaCycles {
@@ -659,10 +742,9 @@ func reconcileQuota(ctx context.Context, client *sdk.Client, id sdk.SchemaObject
 		}
 	}
 
-	if previous.blockEnforcementEnabled != desired.blockEnforcementEnabled || previous.notifyBlockedUsers != desired.notifyBlockedUsers {
-		args := sdk.NewQuotaSetBlockEnforcementEnabledArgsRequest(desired.blockEnforcementEnabled).WithNotifyUsers(desired.notifyBlockedUsers)
-		if _, err := quotas.SetBlockEnforcementEnabled(ctx, sdk.NewSetBlockEnforcementEnabledQuotaRequest(id, *args)); err != nil {
-			return fmt.Errorf("setting block enforcement: %w", err)
+	if blockEnforcementChanged && desired.blockEnforcementEnabled {
+		if err := setBlockEnforcement(); err != nil {
+			return err
 		}
 	}
 

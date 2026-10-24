@@ -34,9 +34,9 @@ for changes required after enabling given [Snowflake BCR Bundle](https://docs.sn
 
 We have added a new preview resource for managing [per-user quotas](https://docs.snowflake.com/en/user-guide/budgets/per-user-quotas) (`SNOWFLAKE.CORE.QUOTA`): [snowflake_quota](https://registry.terraform.io/providers/snowflakedb/snowflake/latest/docs/resources/quota). It manages the monitored domains (`WAREHOUSE`, `AI FUNCTION`, `CORTEX AGENT`, `CORTEX CODE`, `SNOWFLAKE INTELLIGENCE`, and `AI GATEWAY`), the users the quota applies to, per-user limits for the monthly, weekly, and daily cycles, block enforcement, notifications, and custom and cycle-start actions.
 
-Quotas have no `ALTER` command, so the provider applies changes by calling the quota's instance methods. These calls are not transactional: if one of them fails, the quota is left partially configured and marked as tainted.
+Quotas have no `ALTER` command, so the provider applies changes by calling the quota's instance methods. These calls are not transactional: if one of them fails during creation, the quota is marked as tainted and recreated by the next apply; if one fails during an update, the quota is left partially configured and the next apply applies the remaining changes.
 
-`admin_emails`, `notify_blocked_users`, and the `cycle` of notification thresholds can't be read from Snowflake, so changes made to them outside Terraform are not detected, and they are not imported.
+`admin_emails`, `notify_blocked_users`, `excluded_user_tag`, and the `cycle` of notification thresholds can't be read from Snowflake, so changes made to them outside Terraform are not detected, and they are not imported.
 
 This feature will be marked as stable in future releases. To use it, add `snowflake_quota_resource` to the `preview_features_enabled` field in the provider configuration.
 

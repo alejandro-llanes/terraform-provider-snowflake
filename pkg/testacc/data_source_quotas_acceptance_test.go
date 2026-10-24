@@ -95,7 +95,7 @@ func TestAcc_Quotas_Filtering(t *testing.T) {
 		WithDependsOn(dependsOn...)
 
 	quotasModelLikePrefix := datasourcemodel.Quotas("test").
-		WithLike(prefix+"%").
+		WithLike(prefix + "%").
 		WithInDatabase(id1.DatabaseId()).
 		WithDependsOn(dependsOn...)
 
