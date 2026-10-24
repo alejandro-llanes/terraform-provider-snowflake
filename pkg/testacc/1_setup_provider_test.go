@@ -88,8 +88,6 @@ func acceptanceTestsProvider() *schema.Provider {
 	// p.ResourcesMap["snowflake_semantic_view"] = resources.SemanticView()
 	// TODO(next postgres prs): Remove postgres resources from here
 	p.ResourcesMap["snowflake_postgres_fork"] = resources.PostgresFork()
-	// TODO [quota spike]: move to the production provider after verifying against a live account
-	p.ResourcesMap["snowflake_quota"] = resources.Quota()
 	return p
 }
 
