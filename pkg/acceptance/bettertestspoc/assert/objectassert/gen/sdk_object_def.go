@@ -127,6 +127,10 @@ var allStructs = []SdkObjectDef{
 	},
 	{
 		IdType:       "sdk.SchemaObjectIdentifier",
+		ObjectStruct: sdk.Quota{},
+	},
+	{
+		IdType:       "sdk.SchemaObjectIdentifier",
 		ObjectStruct: sdk.HybridTable{},
 	},
 	{
