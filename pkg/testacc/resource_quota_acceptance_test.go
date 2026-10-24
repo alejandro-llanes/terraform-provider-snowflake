@@ -248,7 +248,7 @@ func TestAcc_Quota_CompleteUseCase(t *testing.T) {
 				ResourceName:            ref,
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"admin_emails", "notify_blocked_users"},
+				ImportStateVerifyIgnore: []string{"admin_emails", "notify_blocked_users", "excluded_user_tag"},
 			},
 		},
 	})

@@ -65,8 +65,11 @@ type quotaTagValue struct {
 	value string
 }
 
+// key compares tags case-insensitively: the guide's GET_QUOTA_SCOPE example returns the tag parts as typed in the reference
+// and the value upper-cased ("FINANCE" for 'finance').
+// TODO [quota spike]: verify the case of the returned tag parts and values.
 func (t quotaTagValue) key() string {
-	return t.tag.FullyQualifiedName() + "=" + t.value
+	return strings.ToUpper(t.tag.FullyQualifiedName() + "=" + t.value)
 }
 
 type quotaNotificationThreshold struct {
@@ -112,8 +115,13 @@ type quotaCycleStartAction struct {
 	arguments []string
 }
 
+// quotaUserKey compares user names as Snowflake identifiers: unquoted names are case-insensitive (GET_QUOTA_SCOPE returns them
+// upper-cased), quoted names are compared as they are.
 func quotaUserKey(name string) string {
-	return strings.Trim(name, `"`)
+	if len(name) >= 2 && strings.HasPrefix(name, `"`) && strings.HasSuffix(name, `"`) {
+		return name[1 : len(name)-1]
+	}
+	return strings.ToUpper(name)
 }
 
 func quotaEmailKey(email string) string {
@@ -261,7 +269,7 @@ func quotaTagValuesFromRaw(set *schema.Set) ([]quotaTagValue, error) {
 
 // quotaConfigurationFromDetails converts the quota's GET_* results into its declarative configuration.
 // Values equivalent to the current configuration keep its spelling; values that can't be read back are taken from it.
-func quotaConfigurationFromDetails(details *sdk.QuotaDetails, current *quotaConfiguration) *quotaConfiguration {
+func quotaConfigurationFromDetails(details *sdk.QuotaDetails, current *quotaConfiguration) (*quotaConfiguration, error) {
 	remote := &quotaConfiguration{
 		perUserLimits:      make(map[sdk.QuotaCycle]int),
 		notifyBlockedUsers: current.notifyBlockedUsers,
@@ -269,24 +277,32 @@ func quotaConfigurationFromDetails(details *sdk.QuotaDetails, current *quotaConf
 	}
 
 	for _, resource := range details.Scope.SharedResources {
-		sharedResource := quotaSharedResource{domain: normalizeQuotaDomain(resource.Domain)}
+		sharedResource := quotaSharedResource{domain: normalizeQuotaDomain(resource)}
 		if !resource.IsWholeDomain() {
 			sharedResource.instance = resource.Name
 		}
-		remote.sharedResources = append(remote.sharedResources, preferCurrentQuotaValue(current.sharedResources, sharedResource, quotaSharedResource.key))
+		remote.sharedResources = append(remote.sharedResources, matchCurrentQuotaSharedResource(current.sharedResources, sharedResource))
 	}
 
+	// TODO [quota spike]: GET_QUOTA_SCOPE shows "tag" as the only tag type, so tags excluded with EXCLUDE_USERS('TAG', ...) can't be
+	// told apart from the included ones (or may not be returned at all). Exclusions are kept from the configuration, and tags
+	// matching a configured exclusion are not read as included ones.
+	remote.excludedUserTags = current.excludedUserTags
+	excludedKeys := make(map[string]struct{}, len(current.excludedUserTags))
+	for _, tag := range current.excludedUserTags {
+		excludedKeys[tag.key()] = struct{}{}
+	}
 	if userTags := details.Scope.UserTags; userTags != nil {
 		for _, tag := range userTags.Tags {
-			// TODO [quota spike]: verify the "type" values that distinguish included and excluded tags.
-			excluded := strings.Contains(strings.ToUpper(tag.Type), "EXCLU")
+			if strings.Contains(strings.ToUpper(tag.Type), "EXCLU") {
+				continue
+			}
 			for _, value := range tag.TagValues {
 				tagValue := quotaTagValue{tag: tag.TagId(), raw: tag.TagId().FullyQualifiedName(), value: value}
-				if excluded {
-					remote.excludedUserTags = append(remote.excludedUserTags, preferCurrentQuotaValue(current.excludedUserTags, tagValue, quotaTagValue.key))
-				} else {
-					remote.userTags = append(remote.userTags, preferCurrentQuotaValue(current.userTags, tagValue, quotaTagValue.key))
+				if _, excluded := excludedKeys[tagValue.key()]; excluded {
+					continue
 				}
+				remote.userTags = append(remote.userTags, preferCurrentQuotaValue(current.userTags, tagValue, quotaTagValue.key))
 			}
 		}
 		if len(remote.userTags) > 0 {
@@ -305,11 +321,11 @@ func quotaConfigurationFromDetails(details *sdk.QuotaDetails, current *quotaConf
 		remote.excludedUsers = append(remote.excludedUsers, preferCurrentQuotaValue(current.excludedUsers, user.UserName, quotaUserKey))
 	}
 
-	for cycle, limit := range map[sdk.QuotaCycle]*float64{
-		sdk.QuotaCycleMonthly: details.Config.PerUserLimit,
-		sdk.QuotaCycleWeekly:  details.Config.PerUserLimitWeekly,
-		sdk.QuotaCycleDaily:   details.Config.PerUserLimitDaily,
-	} {
+	for _, cycle := range sdk.AllQuotaCycles {
+		limit, err := details.Config.PerUserLimitFor(cycle)
+		if err != nil {
+			return nil, err
+		}
 		if limit != nil {
 			remote.perUserLimits[cycle] = int(*limit)
 		}
@@ -344,9 +360,13 @@ func quotaConfigurationFromDetails(details *sdk.QuotaDetails, current *quotaConf
 	}
 
 	for _, action := range details.CustomActions {
+		procedure, err := action.ProcedureId()
+		if err != nil {
+			return nil, fmt.Errorf("parsing the procedure of the custom action %s: %w", action.ActionId, err)
+		}
 		remoteAction := quotaCustomAction{
-			procedure:     action.ProcedureId,
-			raw:           action.ProcedureId.FullyQualifiedName(),
+			procedure:     procedure,
+			raw:           procedure.FullyQualifiedName(),
 			arguments:     action.ProcedureArgs,
 			spendStrategy: action.SpendStrategy,
 			threshold:     action.Threshold,
@@ -354,10 +374,14 @@ func quotaConfigurationFromDetails(details *sdk.QuotaDetails, current *quotaConf
 		remote.customActions = append(remote.customActions, preferCurrentQuotaValue(current.customActions, remoteAction, quotaCustomAction.key))
 	}
 
-	if action := details.CycleStartAction; action != nil && action.ProcedureId != nil {
+	if action := details.CycleStartAction; action != nil && action.IsSet() {
+		procedure, err := action.ProcedureId()
+		if err != nil {
+			return nil, fmt.Errorf("parsing the procedure of the cycle-start action: %w", err)
+		}
 		remote.cycleStartAction = &quotaCycleStartAction{
-			procedure: *action.ProcedureId,
-			raw:       action.ProcedureId.FullyQualifiedName(),
+			procedure: procedure,
+			raw:       procedure.FullyQualifiedName(),
 			arguments: action.ProcedureArgs,
 		}
 		if current.cycleStartAction != nil && current.cycleStartActionKey() == remote.cycleStartActionKey() {
@@ -365,15 +389,101 @@ func quotaConfigurationFromDetails(details *sdk.QuotaDetails, current *quotaConf
 		}
 	}
 
-	return remote
+	return remote, nil
 }
 
 // normalizeQuotaDomain maps a domain returned by Snowflake to the provider's spelling, keeping unknown domains as they are.
-func normalizeQuotaDomain(domain string) sdk.QuotaSharedResourceDomain {
-	if normalized, err := sdk.ToQuotaSharedResourceDomain(strings.ReplaceAll(domain, "_", " ")); err == nil {
+func normalizeQuotaDomain(resource sdk.QuotaScopeSharedResource) sdk.QuotaSharedResourceDomain {
+	if normalized, err := resource.NormalizedDomain(); err == nil {
 		return normalized
 	}
-	return sdk.QuotaSharedResourceDomain(domain)
+	return sdk.QuotaSharedResourceDomain(resource.Domain)
+}
+
+// quotaRegisteredProcedureFqn finds the PROCEDURE_FQN Snowflake returns for the given configured action, so that it can be
+// passed back to REMOVE_CUSTOM_ACTIONS unchanged.
+func quotaRegisteredProcedureFqn(registered []sdk.QuotaCustomAction, action quotaCustomAction) (string, bool) {
+	for _, registeredAction := range registered {
+		if registeredAction.Threshold != action.threshold {
+			continue
+		}
+		procedure, err := registeredAction.ProcedureId()
+		if err == nil && procedure.FullyQualifiedName() == action.procedure.FullyQualifiedName() {
+			return registeredAction.ProcedureFqn, true
+		}
+	}
+	return "", false
+}
+
+// matchCurrentQuotaSharedResource keeps the configured spelling of an equivalent shared resource. GET_QUOTA_SCOPE may return an
+// instance by its bare name (e.g. an agent without its database and schema), so a unique bare-name match in the same domain is
+// accepted too.
+// TODO [quota spike]: verify the "name" returned for each domain.
+func matchCurrentQuotaSharedResource(current []quotaSharedResource, remote quotaSharedResource) quotaSharedResource {
+	if idx := slices.IndexFunc(current, func(c quotaSharedResource) bool { return c.key() == remote.key() }); idx >= 0 {
+		return current[idx]
+	}
+	if remote.instance == "" {
+		return remote
+	}
+	var matches []quotaSharedResource
+	for _, c := range current {
+		if c.domain == remote.domain && c.instance != "" && strings.EqualFold(quotaBareName(c.instance), quotaBareName(remote.instance)) {
+			matches = append(matches, c)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0]
+	}
+	return remote.canonical()
+}
+
+// canonical returns the shared resource with its instance spelled the way the configuration would (quoted identifiers for
+// object references), so that an unmatched instance (e.g. on import) doesn't differ from the configuration only by quoting.
+func (r quotaSharedResource) canonical() quotaSharedResource {
+	switch {
+	case r.instance == "", slices.Contains([]sdk.QuotaSharedResourceDomain{sdk.QuotaSharedResourceDomainAiFunction, sdk.QuotaSharedResourceDomainCortexCode}, r.domain):
+	case r.domain == sdk.QuotaSharedResourceDomainCortexAgent:
+		if id, err := sdk.ParseSchemaObjectIdentifier(r.instance); err == nil {
+			r.instance = id.FullyQualifiedName()
+		}
+	default:
+		if id, err := sdk.ParseAccountObjectIdentifier(r.instance); err == nil {
+			r.instance = id.FullyQualifiedName()
+		}
+	}
+	return r
+}
+
+func quotaBareName(instance string) string {
+	if id, err := sdk.ParseSchemaObjectIdentifier(instance); err == nil {
+		return id.Name()
+	}
+	if id, err := sdk.ParseAccountObjectIdentifier(instance); err == nil {
+		return id.Name()
+	}
+	return strings.Trim(instance, `"`)
+}
+
+// quotaReconcileAccumulatingList applies the desired elements of a list whose setter accumulates (INCLUDE_USERS, EXCLUDE_USERS):
+// when elements were removed, the list is cleared with an empty array and the desired elements are set again;
+// otherwise only the added elements are sent.
+func quotaReconcileAccumulatingList[T any](previous []T, desired []T, key func(T) string, set func([]T) error) error {
+	removed, added := quotaDiffByKey(previous, desired, key)
+	switch {
+	case len(removed) > 0:
+		if err := set([]T{}); err != nil {
+			return err
+		}
+		if len(desired) > 0 {
+			return set(desired)
+		}
+		return nil
+	case len(added) > 0:
+		return set(added)
+	default:
+		return nil
+	}
 }
 
 func preferCurrentQuotaValue[T any](current []T, remote T, key func(T) string) T {

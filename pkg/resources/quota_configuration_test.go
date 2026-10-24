@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/Snowflake-Labs/terraform-provider-snowflake/pkg/sdk"
@@ -52,9 +53,14 @@ func Test_quotaConfigurationFromRaw(t *testing.T) {
 }
 
 func Test_quotaConfigurationFromDetails(t *testing.T) {
+	tagId := sdk.NewSchemaObjectIdentifier("DB", "SCH", "TAG")
 	current := &quotaConfiguration{
-		sharedResources:    []quotaSharedResource{{domain: sdk.QuotaSharedResourceDomainCortexAgent, instance: `"DB"."SCH"."AGENT"`}},
-		includedUsers:      []string{`"alice"`},
+		sharedResources: []quotaSharedResource{
+			{domain: sdk.QuotaSharedResourceDomainCortexAgent, instance: `"DB"."SCH"."AGENT"`},
+			{domain: sdk.QuotaSharedResourceDomainWarehouse, instance: `"wh"`},
+		},
+		excludedUserTags:   []quotaTagValue{{tag: tagId, raw: "DB.SCH.TAG", value: "b"}},
+		includedUsers:      []string{"alice"},
 		notifyBlockedUsers: true,
 		adminEmails:        []string{"admin@example.com"},
 		notificationThresholds: []quotaNotificationThreshold{
@@ -64,40 +70,47 @@ func Test_quotaConfigurationFromDetails(t *testing.T) {
 	details := &sdk.QuotaDetails{
 		Scope: sdk.QuotaScope{
 			SharedResources: []sdk.QuotaScopeSharedResource{
-				{Domain: "CORTEX AGENT", Id: 42, Name: "DB.SCH.AGENT"},
-				{Domain: "AI_FUNCTION", Id: -1, Name: "AI FUNCTION"},
+				// returned by its bare name, matched to the configured fully qualified one
+				{Domain: "CORTEX_AGENT", Id: "42", Name: "AGENT"},
+				{Domain: "AI_FUNCTION", Id: "-1", Name: "AI FUNCTION"},
+				{Domain: "WAREHOUSE", Id: "7", Name: "wh"},
+				// not configured (e.g. on import): spelled as the configuration would
+				{Domain: "WAREHOUSE", Id: "8", Name: "OTHER"},
 			},
-			IncludedUsers: []sdk.QuotaScopeUser{{UserId: 1, UserName: "alice"}, {UserId: 2, UserName: "BOB"}},
+			IncludedUsers: []sdk.QuotaScopeUser{{UserId: "1", UserName: "ALICE"}, {UserId: "2", UserName: "BOB"}},
 			UserTags: &sdk.QuotaScopeUserTags{
 				Operator: "UNION",
 				Tags: []sdk.QuotaScopeTag{
-					{Type: "INCLUDE", TagDatabase: "DB", TagSchema: "SCH", TagKey: "TAG", TagValues: []string{"a", "b"}},
+					{Type: "tag", TagDatabase: "DB", TagSchema: "SCH", TagKey: "TAG", TagValues: []string{"a", "b"}},
 					{Type: "EXCLUDE", TagDatabase: "DB", TagSchema: "SCH", TagKey: "TAG", TagValues: []string{"c"}},
 				},
 			},
 		},
-		Config: sdk.QuotaConfig{PerUserLimit: new(1000.0), BlockEnforcementEnabled: new(true)},
+		Config: sdk.QuotaConfig{PerUserLimit: new(json.Number("1000")), BlockEnforcementEnabled: new(true)},
 		NotificationThresholds: []sdk.QuotaNotificationThreshold{
 			{Threshold: 80, SpendStrategy: sdk.QuotaSpendStrategyProjected, NotifyUser: true},
 			{Threshold: 100, SpendStrategy: sdk.QuotaSpendStrategyActual},
 		},
 	}
 
-	remote := quotaConfigurationFromDetails(details, current)
+	remote, err := quotaConfigurationFromDetails(details, current)
+	require.NoError(t, err)
 
 	// equivalent values keep the configured spelling
 	assert.Equal(t, []quotaSharedResource{
 		{domain: sdk.QuotaSharedResourceDomainCortexAgent, instance: `"DB"."SCH"."AGENT"`},
 		{domain: sdk.QuotaSharedResourceDomainAiFunction},
+		{domain: sdk.QuotaSharedResourceDomainWarehouse, instance: `"wh"`},
+		{domain: sdk.QuotaSharedResourceDomainWarehouse, instance: `"OTHER"`},
 	}, remote.sharedResources)
-	assert.Equal(t, []string{`"alice"`, "BOB"}, remote.includedUsers)
+	assert.Equal(t, []string{"alice", "BOB"}, remote.includedUsers)
 
-	// included and excluded tags are split, one element per value
+	// one included tag per value; tags matching a configured exclusion or marked as excluded are skipped,
+	// and the exclusions themselves are kept from the configuration
 	require.NotNil(t, remote.userTagsOperator)
 	assert.Equal(t, sdk.QuotaUserTagsOperatorUnion, *remote.userTagsOperator)
-	assert.Len(t, remote.userTags, 2)
-	require.Len(t, remote.excludedUserTags, 1)
-	assert.Equal(t, "c", remote.excludedUserTags[0].value)
+	assert.Equal(t, []quotaTagValue{{tag: tagId, raw: `"DB"."SCH"."TAG"`, value: "a"}}, remote.userTags)
+	assert.Equal(t, current.excludedUserTags, remote.excludedUserTags)
 
 	assert.Equal(t, 1000, remote.perUserLimit(sdk.QuotaCycleMonthly))
 	assert.Equal(t, IntDefault, remote.perUserLimit(sdk.QuotaCycleDaily))
@@ -139,8 +152,70 @@ func Test_quotaDiffByKey(t *testing.T) {
 	assert.Equal(t, []string{"a"}, removed)
 	assert.Equal(t, []string{"c"}, added)
 
-	assert.True(t, quotaKeysEqual([]string{`"alice"`}, []string{"alice"}, quotaUserKey))
+	// unquoted user names are case-insensitive identifiers, quoted ones are exact
+	assert.True(t, quotaKeysEqual([]string{"alice"}, []string{"ALICE"}, quotaUserKey))
+	assert.True(t, quotaKeysEqual([]string{`"ALICE"`}, []string{"alice"}, quotaUserKey))
+	assert.False(t, quotaKeysEqual([]string{`"alice"`}, []string{"ALICE"}, quotaUserKey))
 	assert.True(t, quotaKeysEqual([]string{"Admin@Example.com"}, []string{"admin@example.com"}, quotaEmailKey))
+}
+
+func Test_matchCurrentQuotaSharedResource(t *testing.T) {
+	agent1 := quotaSharedResource{domain: sdk.QuotaSharedResourceDomainCortexAgent, instance: `"DB"."SCH1"."AGENT"`}
+	agent2 := quotaSharedResource{domain: sdk.QuotaSharedResourceDomainCortexAgent, instance: `"DB"."SCH2"."AGENT"`}
+	whole := quotaSharedResource{domain: sdk.QuotaSharedResourceDomainCortexAgent}
+
+	t.Run("exact key match wins", func(t *testing.T) {
+		remote := quotaSharedResource{domain: sdk.QuotaSharedResourceDomainCortexAgent, instance: "DB.SCH2.AGENT"}
+		assert.Equal(t, agent2, matchCurrentQuotaSharedResource([]quotaSharedResource{agent1, agent2}, remote))
+	})
+
+	t.Run("unique bare name match", func(t *testing.T) {
+		remote := quotaSharedResource{domain: sdk.QuotaSharedResourceDomainCortexAgent, instance: "agent"}
+		assert.Equal(t, agent1, matchCurrentQuotaSharedResource([]quotaSharedResource{agent1, whole}, remote))
+	})
+
+	t.Run("ambiguous bare name is kept as returned", func(t *testing.T) {
+		remote := quotaSharedResource{domain: sdk.QuotaSharedResourceDomainCortexAgent, instance: "AGENT"}
+		assert.Equal(t, remote, matchCurrentQuotaSharedResource([]quotaSharedResource{agent1, agent2}, remote))
+	})
+
+	t.Run("whole domain never matches an instance", func(t *testing.T) {
+		remote := quotaSharedResource{domain: sdk.QuotaSharedResourceDomainCortexAgent}
+		assert.Equal(t, remote, matchCurrentQuotaSharedResource([]quotaSharedResource{agent1}, remote))
+	})
+}
+
+func Test_quotaReconcileAccumulatingList(t *testing.T) {
+	record := func(calls *[][]string) func([]string) error {
+		return func(values []string) error {
+			*calls = append(*calls, values)
+			return nil
+		}
+	}
+
+	t.Run("no change makes no call", func(t *testing.T) {
+		var calls [][]string
+		require.NoError(t, quotaReconcileAccumulatingList([]string{"A"}, []string{`"A"`}, quotaUserKey, record(&calls)))
+		assert.Empty(t, calls)
+	})
+
+	t.Run("additions only send the added elements", func(t *testing.T) {
+		var calls [][]string
+		require.NoError(t, quotaReconcileAccumulatingList([]string{"A"}, []string{"A", "B"}, quotaUserKey, record(&calls)))
+		assert.Equal(t, [][]string{{"B"}}, calls)
+	})
+
+	t.Run("a removal clears the list and sets the remaining elements", func(t *testing.T) {
+		var calls [][]string
+		require.NoError(t, quotaReconcileAccumulatingList([]string{"A", "B"}, []string{"B", "C"}, quotaUserKey, record(&calls)))
+		assert.Equal(t, [][]string{{}, {"B", "C"}}, calls)
+	})
+
+	t.Run("removing everything only clears the list", func(t *testing.T) {
+		var calls [][]string
+		require.NoError(t, quotaReconcileAccumulatingList([]string{"A"}, nil, quotaUserKey, record(&calls)))
+		assert.Equal(t, [][]string{{}}, calls)
+	})
 }
 
 func Test_quotaCustomAction_removalKey(t *testing.T) {

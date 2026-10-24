@@ -102,7 +102,7 @@ func (quotaDetailsToSchemaMapper) additionalToSchema(src *sdk.QuotaDetails, dst 
 	for i, action := range src.CustomActions {
 		actionSchema := map[string]any{
 			"action_id":           action.ActionId,
-			"procedure":           action.ProcedureId.FullyQualifiedName(),
+			"procedure":           action.ProcedureFqn,
 			"procedure_arguments": action.ProcedureArgs,
 			"spend_strategy":      string(action.SpendStrategy),
 			"threshold":           action.Threshold,
@@ -121,8 +121,8 @@ func (quotaDetailsToSchemaMapper) additionalToSchema(src *sdk.QuotaDetails, dst 
 		if action.ActionUuid != nil {
 			actionSchema["action_uuid"] = *action.ActionUuid
 		}
-		if action.ProcedureId != nil {
-			actionSchema["procedure"] = action.ProcedureId.FullyQualifiedName()
+		if action.ProcedureFqn != nil {
+			actionSchema["procedure"] = *action.ProcedureFqn
 		}
 		if action.AddedTimestamp != nil {
 			actionSchema["added_timestamp"] = action.AddedTimestamp.String()
@@ -138,11 +138,14 @@ func (quotaDetailsToSchemaMapper) additionalToSchema(src *sdk.QuotaDetails, dst 
 func quotaScopeToSchema(scope sdk.QuotaScope) map[string]any {
 	sharedResources := make([]map[string]any, len(scope.SharedResources))
 	for i, resource := range scope.SharedResources {
-		sharedResources[i] = map[string]any{
+		resourceSchema := map[string]any{
 			"domain": resource.Domain,
-			"id":     int(resource.Id),
 			"name":   resource.Name,
 		}
+		if id, err := resource.Id.Int64(); err == nil {
+			resourceSchema["id"] = int(id)
+		}
+		sharedResources[i] = resourceSchema
 	}
 	userNames := func(users []sdk.QuotaScopeUser) []string {
 		names := make([]string, len(users))
@@ -173,14 +176,14 @@ func quotaScopeToSchema(scope sdk.QuotaScope) map[string]any {
 
 func quotaConfigToSchema(config sdk.QuotaConfig) map[string]any {
 	configSchema := make(map[string]any)
-	if config.PerUserLimit != nil {
-		configSchema["per_user_limit"] = *config.PerUserLimit
-	}
-	if config.PerUserLimitWeekly != nil {
-		configSchema["per_user_limit_weekly"] = *config.PerUserLimitWeekly
-	}
-	if config.PerUserLimitDaily != nil {
-		configSchema["per_user_limit_daily"] = *config.PerUserLimitDaily
+	for key, cycle := range map[string]sdk.QuotaCycle{
+		"per_user_limit":        sdk.QuotaCycleMonthly,
+		"per_user_limit_weekly": sdk.QuotaCycleWeekly,
+		"per_user_limit_daily":  sdk.QuotaCycleDaily,
+	} {
+		if limit, err := config.PerUserLimitFor(cycle); err == nil && limit != nil {
+			configSchema[key] = *limit
+		}
 	}
 	if config.BlockEnforcementEnabled != nil {
 		configSchema["block_enforcement_enabled"] = *config.BlockEnforcementEnabled
