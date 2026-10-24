@@ -63,6 +63,7 @@ const (
 	ObjectTypePipe                   ObjectType = "PIPE"
 	ObjectTypeAlert                  ObjectType = "ALERT"
 	ObjectTypeBudget                 ObjectType = "SNOWFLAKE.CORE.BUDGET"
+	ObjectTypeQuota                  ObjectType = "SNOWFLAKE.CORE.QUOTA"
 	ObjectTypeClassification         ObjectType = "SNOWFLAKE.ML.CLASSIFICATION"
 	ObjectTypeApplication            ObjectType = "APPLICATION"
 	ObjectTypeApplicationPackage     ObjectType = "APPLICATION PACKAGE"
@@ -184,6 +185,7 @@ var allObjectTypes = []ObjectType{
 	ObjectTypePipe,
 	ObjectTypeAlert,
 	ObjectTypeBudget,
+	ObjectTypeQuota,
 	ObjectTypeClassification,
 	ObjectTypeApplication,
 	ObjectTypeApplicationPackage,
@@ -307,6 +309,7 @@ func objectTypeSingularToPluralMap() map[ObjectType]PluralObjectType {
 		ObjectTypePipe:                        PluralObjectTypePipes,
 		ObjectTypeAlert:                       PluralObjectTypeAlerts,
 		ObjectTypeBudget:                      PluralObjectTypeBudgets,
+		ObjectTypeQuota:                       PluralObjectTypeQuotas,
 		ObjectTypeClassification:              PluralObjectTypeClassifications,
 		ObjectTypeApplication:                 PluralObjectTypeApplications,
 		ObjectTypeApplicationPackage:          PluralObjectTypeApplicationPackages,
@@ -442,6 +445,7 @@ const (
 	PluralObjectTypePipes                        PluralObjectType = "PIPES"
 	PluralObjectTypeAlerts                       PluralObjectType = "ALERTS"
 	PluralObjectTypeBudgets                      PluralObjectType = "SNOWFLAKE.CORE.BUDGET"
+	PluralObjectTypeQuotas                       PluralObjectType = "SNOWFLAKE.CORE.QUOTA"
 	PluralObjectTypeClassifications              PluralObjectType = "SNOWFLAKE.ML.CLASSIFICATION"
 	PluralObjectTypeApplications                 PluralObjectType = "APPLICATIONS"
 	PluralObjectTypeApplicationPackages          PluralObjectType = "APPLICATION PACKAGES"

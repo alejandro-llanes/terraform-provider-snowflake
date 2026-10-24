@@ -62,6 +62,7 @@ func init() {
 		policyReferencesDef,
 		postgresInstancesDef,
 		proceduresDef,
+		quotasDef,
 		replicationFunctionsDef,
 		resourceMonitorsDef,
 		rolesDef,
