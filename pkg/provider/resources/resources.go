@@ -108,7 +108,7 @@ const (
 	ProcedureScala                                         resource = "snowflake_procedure_scala"
 	ProcedureSql                                           resource = "snowflake_procedure_sql"
 	Quota                                                  resource = "snowflake_quota"
-	ResourceMonitor                                       resource = "snowflake_resource_monitor"
+	ResourceMonitor                                        resource = "snowflake_resource_monitor"
 	RowAccessPolicy                                        resource = "snowflake_row_access_policy"
 	SamlSecurityIntegration                                resource = "snowflake_saml_integration"
 	Saml2SecurityIntegration                               resource = "snowflake_saml2_integration"
