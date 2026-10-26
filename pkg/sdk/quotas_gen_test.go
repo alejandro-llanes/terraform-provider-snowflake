@@ -20,6 +20,14 @@ const (
 	case_Quotas_validation_Create_opts_ConflictingFields                                     testCaseName = "validation_Create_opts_ConflictingFields"
 	case_Quotas_sql_Create_basic                                                             testCaseName = "sql_Create_basic"
 	case_Quotas_sql_Create_all                                                               testCaseName = "sql_Create_all"
+	case_Quotas_validation_Alter_name_ValidIdentifier                                        testCaseName = "validation_Alter_name_ValidIdentifier"
+	case_Quotas_validation_Alter_opts_ExactlyOneValueSet_NoneSet                             testCaseName = "validation_Alter_opts_ExactlyOneValueSet_NoneSet"
+	case_Quotas_validation_Alter_opts_ExactlyOneValueSet_MoreThanOneSet                      testCaseName = "validation_Alter_opts_ExactlyOneValueSet_MoreThanOneSet"
+	case_Quotas_validation_Alter_opts_Set_AtLeastOneValueSet                                 testCaseName = "validation_Alter_opts_Set_AtLeastOneValueSet"
+	case_Quotas_validation_Alter_opts_Unset_AtLeastOneValueSet                               testCaseName = "validation_Alter_opts_Unset_AtLeastOneValueSet"
+	case_Quotas_sql_Alter_RenameTo                                                           testCaseName = "sql_Alter_RenameTo"
+	case_Quotas_sql_Alter_Set                                                                testCaseName = "sql_Alter_Set"
+	case_Quotas_sql_Alter_Unset                                                              testCaseName = "sql_Alter_Unset"
 	case_Quotas_validation_Drop_name_ValidIdentifier                                         testCaseName = "validation_Drop_name_ValidIdentifier"
 	case_Quotas_sql_Drop_basic                                                               testCaseName = "sql_Drop_basic"
 	case_Quotas_sql_Drop_all                                                                 testCaseName = "sql_Drop_all"
@@ -88,6 +96,7 @@ const (
 
 type QuotasTestsContext struct {
 	Create                        *sdkTestCtx[*CreateQuotaOptions]
+	Alter                         *sdkTestCtx[*AlterQuotaOptions]
 	Drop                          *sdkTestCtx[*DropQuotaOptions]
 	Show                          *sdkTestCtx[*ShowQuotaOptions]
 	AddSharedResource             *sdkTestCtx[*AddSharedResourceQuotaOptions]
@@ -148,6 +157,67 @@ var quotasTests = QuotasTestsContext{
 			},
 			sqlCase[*CreateQuotaOptions]{
 				Name: case_Quotas_sql_Create_all,
+			},
+		),
+	Alter: newSdkTestCtx[*AlterQuotaOptions](
+		"Quotas", "Alter",
+	).
+		withDefaultOpts(func() *AlterQuotaOptions {
+			return &AlterQuotaOptions{
+				name: quotasTestIdSchemaObjectIdentifier,
+			}
+		}).
+		withValidationCases(
+			validationCase[*AlterQuotaOptions]{
+				Name:        case_Quotas_validation_Alter_name_ValidIdentifier,
+				ExpectedErr: errInvalidIdentifier("AlterQuotaOptions", "name"),
+				DefaultModify: func(opts *AlterQuotaOptions) {
+					opts.name = emptySchemaObjectIdentifier
+				},
+			},
+			validationCase[*AlterQuotaOptions]{
+				Name:        case_Quotas_validation_Alter_opts_ExactlyOneValueSet_NoneSet,
+				ExpectedErr: errExactlyOneOf("AlterQuotaOptions", "RenameTo", "Set", "Unset"),
+				DefaultModify: func(opts *AlterQuotaOptions) {
+					opts.RenameTo = nil
+					opts.Set = nil
+					opts.Unset = nil
+				},
+			},
+			validationCase[*AlterQuotaOptions]{
+				Name:        case_Quotas_validation_Alter_opts_ExactlyOneValueSet_MoreThanOneSet,
+				ExpectedErr: errExactlyOneOf("AlterQuotaOptions", "RenameTo", "Set", "Unset"),
+				DefaultModify: func(opts *AlterQuotaOptions) {
+					opts.RenameTo = new(randomSchemaObjectIdentifier())
+					opts.Set = &QuotaSet{}
+				},
+			},
+			validationCase[*AlterQuotaOptions]{
+				Name:        case_Quotas_validation_Alter_opts_Set_AtLeastOneValueSet,
+				ExpectedErr: errAtLeastOneOf("AlterQuotaOptions.Set", "Comment"),
+				DefaultModify: func(opts *AlterQuotaOptions) {
+					opts.Set = &QuotaSet{}
+					opts.Set.Comment = nil
+				},
+			},
+			validationCase[*AlterQuotaOptions]{
+				Name:        case_Quotas_validation_Alter_opts_Unset_AtLeastOneValueSet,
+				ExpectedErr: errAtLeastOneOf("AlterQuotaOptions.Unset", "Comment"),
+				DefaultModify: func(opts *AlterQuotaOptions) {
+					opts.Unset = &QuotaUnset{}
+					opts.Unset.Comment = nil
+				},
+			},
+		).
+		withSqlCases(
+			sqlCase[*AlterQuotaOptions]{
+				Name: case_Quotas_sql_Alter_RenameTo,
+			},
+			sqlCase[*AlterQuotaOptions]{
+				Name: case_Quotas_sql_Alter_Set,
+			},
+			sqlCase[*AlterQuotaOptions]{
+				Name: case_Quotas_sql_Alter_Unset,
 			},
 		),
 	Drop: newSdkTestCtx[*DropQuotaOptions](
@@ -812,6 +882,11 @@ var quotasTests = QuotasTestsContext{
 func TestQuotas_Create(t *testing.T) {
 	quotasTests.Create.RunValidationCases(t)
 	quotasTests.Create.RunSqlCases(t)
+}
+
+func TestQuotas_Alter(t *testing.T) {
+	quotasTests.Alter.RunValidationCases(t)
+	quotasTests.Alter.RunSqlCases(t)
 }
 
 func TestQuotas_Drop(t *testing.T) {

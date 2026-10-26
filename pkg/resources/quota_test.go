@@ -157,14 +157,38 @@ func Test_reconcileQuota(t *testing.T) {
 		assert.Equal(t, []string{"INCLUDE_USERS", "INCLUDE_USERS", "EXCLUDE_USERS"}, reconcile(t, previous, desired, nil))
 	})
 
-	t.Run("user tags are overwritten in one call", func(t *testing.T) {
-		tagId := sdk.NewSchemaObjectIdentifier("DB", "SCH", "TAG")
-		previous := configuration(func(c *quotaConfiguration) { c.userTags = []quotaTagValue{{tag: tagId, value: "a"}} })
-		desired := configuration(func(c *quotaConfiguration) {
-			c.userTags = []quotaTagValue{{tag: tagId, value: "b"}}
-			c.excludedUserTags = []quotaTagValue{{tag: tagId, value: "c"}}
+	tagId := sdk.NewSchemaObjectIdentifier("DB", "SCH", "TAG")
+	operator := sdk.QuotaUserTagsOperatorUnion
+
+	t.Run("user tags are replaced in one call that keeps the users", func(t *testing.T) {
+		previous := configuration(func(c *quotaConfiguration) {
+			c.userTags, c.userTagsOperator = []quotaTagValue{{tag: tagId, value: "a"}}, &operator
+			c.includedUsers = []string{"A"}
 		})
-		assert.Equal(t, []string{"SET_USER_TAGS", "EXCLUDE_USERS"}, reconcile(t, previous, desired, nil))
+		desired := configuration(func(c *quotaConfiguration) {
+			c.userTags, c.userTagsOperator = []quotaTagValue{{tag: tagId, value: "b"}}, &operator
+			c.includedUsers = []string{"A"}
+		})
+		assert.Equal(t, []string{"SET_USER_TAGS"}, reconcile(t, previous, desired, nil))
+	})
+
+	t.Run("excluding tags clears the users, which are set again", func(t *testing.T) {
+		previous := configuration(func(c *quotaConfiguration) {
+			c.userTags, c.userTagsOperator = []quotaTagValue{{tag: tagId, value: "a"}}, &operator
+			c.includedUsers = []string{"A"}
+			c.excludedUsers = []string{"B"}
+		})
+		desired := configuration(func(c *quotaConfiguration) {
+			c.excludedUserTags = []quotaTagValue{{tag: tagId, value: "c"}}
+			c.includedUsers = []string{"A"}
+			c.excludedUsers = []string{"B"}
+		})
+		assert.Equal(t, []string{"EXCLUDE_USERS", "INCLUDE_USERS", "EXCLUDE_USERS"}, reconcile(t, previous, desired, nil))
+	})
+
+	t.Run("removing all tags resets the quota to all users", func(t *testing.T) {
+		previous := configuration(func(c *quotaConfiguration) { c.excludedUserTags = []quotaTagValue{{tag: tagId, value: "c"}} })
+		assert.Equal(t, []string{"EXCLUDE_USERS"}, reconcile(t, previous, configuration(nil), nil))
 	})
 
 	t.Run("limits are unset and set per cycle", func(t *testing.T) {
@@ -242,10 +266,29 @@ func Test_Quota_CustomizeDiff(t *testing.T) {
 
 	t.Run("duplicate notification thresholds are rejected", func(t *testing.T) {
 		err := planConfig(t, map[string]any{"notification_threshold": []any{
-			map[string]any{"threshold": 80, "spend_strategy": "PROJECTED", "cycle": "MONTHLY"},
-			map[string]any{"threshold": 80, "spend_strategy": "PROJECTED", "cycle": "WEEKLY"},
+			map[string]any{"threshold": 80, "spend_strategy": "PROJECTED", "cycle": "MONTHLY", "notify_user": true},
+			map[string]any{"threshold": 80, "spend_strategy": "PROJECTED", "cycle": "MONTHLY", "notify_user": false},
 		}})
-		require.ErrorContains(t, err, "80% PROJECTED is defined more than once")
+		require.ErrorContains(t, err, "80% PROJECTED MONTHLY is defined more than once")
+	})
+
+	t.Run("a domain can't be monitored both as a whole and by its instances", func(t *testing.T) {
+		err := planConfig(t, map[string]any{"shared_resource": []any{sharedResource("AI FUNCTION", ""), sharedResource("AI FUNCTION", "AI_CLASSIFY")}})
+		require.ErrorContains(t, err, "the AI FUNCTION domain is monitored as a whole")
+	})
+
+	t.Run("included and excluded tags conflict", func(t *testing.T) {
+		// ConflictsWith is checked when the configuration is validated, before the diff
+		tag := map[string]any{"tag": `"DB"."SCH"."TAG"`, "value": "a"}
+		diags := Quota().Validate(terraform.NewResourceConfigRaw(map[string]any{
+			"database":          "DB",
+			"schema":            "SCH",
+			"name":              "QUOTA",
+			"user_tags":         []any{map[string]any{"tag": []any{tag}}},
+			"excluded_user_tag": []any{tag},
+		}))
+		require.True(t, diags.HasError())
+		assert.Equal(t, "Conflicting configuration arguments", diags[0].Summary)
 	})
 
 	t.Run("a valid configuration plans", func(t *testing.T) {
@@ -255,6 +298,7 @@ func Test_Quota_CustomizeDiff(t *testing.T) {
 			"notification_threshold": []any{
 				map[string]any{"threshold": 80, "spend_strategy": "PROJECTED"},
 				map[string]any{"threshold": 80, "spend_strategy": "ACTUAL"},
+				map[string]any{"threshold": 80, "spend_strategy": "PROJECTED", "cycle": "DAILY"},
 			},
 		}))
 	})

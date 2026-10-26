@@ -4,6 +4,7 @@ package sdk
 
 var (
 	_ optionsProvider[CreateQuotaOptions]                        = new(CreateQuotaRequest)
+	_ optionsProvider[AlterQuotaOptions]                         = new(AlterQuotaRequest)
 	_ optionsProvider[DropQuotaOptions]                          = new(DropQuotaRequest)
 	_ optionsProvider[ShowQuotaOptions]                          = new(ShowQuotaRequest)
 	_ optionsProvider[AddSharedResourceQuotaOptions]             = new(AddSharedResourceQuotaRequest)
@@ -36,6 +37,21 @@ type CreateQuotaRequest struct {
 	IfNotExists *bool
 	name        SchemaObjectIdentifier // required
 	Comment     *string
+}
+
+type AlterQuotaRequest struct {
+	name     SchemaObjectIdentifier // required
+	RenameTo *SchemaObjectIdentifier
+	Set      *QuotaSetRequest
+	Unset    *QuotaUnsetRequest
+}
+
+type QuotaSetRequest struct {
+	Comment *string
+}
+
+type QuotaUnsetRequest struct {
+	Comment *bool
 }
 
 type DropQuotaRequest struct {
@@ -84,7 +100,7 @@ type SetUserTagsQuotaRequest struct {
 
 type QuotaSetUserTagsArgsRequest struct {
 	Tags     []QuotaUserTagRequest // required
-	Operator *QuotaUserTagsOperator
+	Operator QuotaUserTagsOperator // required
 }
 
 type QuotaUserTagRequest struct {
@@ -181,6 +197,7 @@ type RemoveNotificationThresholdQuotaRequest struct {
 type QuotaRemoveNotificationThresholdArgsRequest struct {
 	Threshold     int                // required
 	SpendStrategy QuotaSpendStrategy // required
+	Cycle         *QuotaCycle
 }
 
 type GetNotificationThresholdsQuotaRequest struct {

@@ -41,6 +41,24 @@ func init() {
 			"CREATE OR REPLACE SNOWFLAKE.CORE.QUOTA %s ()", id.FullyQualifiedName(),
 		)
 
+	newId := randomSchemaObjectIdentifier()
+	quotasTests.Alter.
+		withModifyAndExpectedSqlf(
+			case_Quotas_sql_Alter_RenameTo,
+			func(opts *AlterQuotaOptions) { opts.RenameTo = &newId },
+			"ALTER SNOWFLAKE.CORE.QUOTA %s RENAME TO %s", id.FullyQualifiedName(), newId.FullyQualifiedName(),
+		).
+		withModifyAndExpectedSqlf(
+			case_Quotas_sql_Alter_Set,
+			func(opts *AlterQuotaOptions) { opts.Set = &QuotaSet{Comment: new("quota comment")} },
+			"ALTER SNOWFLAKE.CORE.QUOTA %s SET COMMENT = 'quota comment'", id.FullyQualifiedName(),
+		).
+		withModifyAndExpectedSqlf(
+			case_Quotas_sql_Alter_Unset,
+			func(opts *AlterQuotaOptions) { opts.Unset = &QuotaUnset{Comment: new(true)} },
+			"ALTER SNOWFLAKE.CORE.QUOTA %s UNSET COMMENT", id.FullyQualifiedName(),
+		)
+
 	quotasTests.Drop.
 		withExpectedSqlf(
 			case_Quotas_sql_Drop_basic,
@@ -188,25 +206,25 @@ func init() {
 		withDefaultOpts(func() *SetUserTagsQuotaOptions {
 			return &SetUserTagsQuotaOptions{
 				name: id,
-				args: QuotaSetUserTagsArgs{Tags: []QuotaUserTag{{Tag: tagId, Value: "finance"}}},
+				args: QuotaSetUserTagsArgs{Tags: []QuotaUserTag{{Tag: tagId, Value: "finance"}}, Operator: QuotaUserTagsOperatorUnion},
 			}
 		}).
 		withExpectedSqlf(
 			case_Quotas_sql_SetUserTags_basic,
-			"CALL %s!SET_USER_TAGS ([[%s, 'finance']])", id.FullyQualifiedName(), tagReference(tagId),
+			"CALL %s!SET_USER_TAGS ([[%s, 'finance']], 'UNION')", id.FullyQualifiedName(), tagReference(tagId),
 		).
 		withAdditionalSqlCasef(
 			"sql_SetUserTags_all",
 			func(opts *SetUserTagsQuotaOptions) {
 				opts.args.Tags = append(opts.args.Tags, QuotaUserTag{Tag: tagId2, Value: "analytics"})
-				opts.args.Operator = new(QuotaUserTagsOperatorIntersection)
+				opts.args.Operator = QuotaUserTagsOperatorIntersection
 			},
 			"CALL %s!SET_USER_TAGS ([[%s, 'finance'], [%s, 'analytics']], 'INTERSECTION')", id.FullyQualifiedName(), tagReference(tagId), tagReference(tagId2),
 		).
 		withAdditionalSqlCasef(
 			"sql_SetUserTags_empty",
 			func(opts *SetUserTagsQuotaOptions) { opts.args.Tags = []QuotaUserTag{} },
-			"CALL %s!SET_USER_TAGS ([])", id.FullyQualifiedName(),
+			"CALL %s!SET_USER_TAGS ([], 'UNION')", id.FullyQualifiedName(),
 		)
 
 	quotasTests.ExcludeUsers.
@@ -352,6 +370,11 @@ func init() {
 		withExpectedSqlf(
 			case_Quotas_sql_RemoveNotificationThreshold_basic,
 			"CALL %s!REMOVE_NOTIFICATION_THRESHOLD (80, 'PROJECTED')", id.FullyQualifiedName(),
+		).
+		withAdditionalSqlCasef(
+			"sql_RemoveNotificationThreshold_cycle",
+			func(opts *RemoveNotificationThresholdQuotaOptions) { opts.args.Cycle = new(QuotaCycleDaily) },
+			"CALL %s!REMOVE_NOTIFICATION_THRESHOLD (80, 'PROJECTED', 'DAILY')", id.FullyQualifiedName(),
 		)
 
 	quotasTests.GetNotificationThresholds.
@@ -489,63 +512,94 @@ func init() {
 }
 
 func TestParseQuotaScope(t *testing.T) {
-	t.Run("example from the per-user quotas guide", func(t *testing.T) {
-		// TODO [quota spike]: replace with a captured GET_QUOTA_SCOPE output.
+	t.Run("captured output with instances and selected users", func(t *testing.T) {
 		scope, err := ParseQuotaScope(`{
-			"excluded_users": [{"user_id": 3, "user_name": "CAROL"}],
-			"included_users": [{"user_id": 1, "user_name": "ALICE"}, {"user_id": 2, "user_name": "BOB"}],
-			"shared_resources": [
-				{"domain": "AI FUNCTION", "id": -1, "name": "AI FUNCTION"},
-				{"domain": "CORTEX AGENT", "id": 42, "name": "DB.SCH.MYAGENT"}
-			],
-			"user_tags": {
-				"operator": "UNION",
-				"tags": [{"type": "INCLUDE", "tag_database": "COST_MGMT_DB", "tag_schema": "TAGS", "tag_key": "COST_CENTER", "tag_values": ["finance"]}]
-			}
-		}`)
+  "excluded_users": [
+    {
+      "user_id": 22,
+      "user_name": "QUOTA_SPIKE_U2"
+    }
+  ],
+  "included_users": [
+    {
+      "user_id": 41,
+      "user_name": "QUOTA_SPIKE_U1"
+    },
+    {
+      "user_id": 42,
+      "user_name": "quota_spike_lower_u"
+    }
+  ],
+  "shared_resources": [
+    {
+      "domain": "AI_FUNCTION",
+      "id": -1,
+      "name": "[ALL-CORTEX AI FUNCTIONS]"
+    },
+    {
+      "domain": "CORTEX_CODE",
+      "id": 1,
+      "name": "CORTEX_CODE_CLI"
+    }
+  ],
+  "user_tags": {
+    "operator": "INTERSECTION",
+    "tags": [
+      {
+        "tagDatabase": "QUOTA_SPIKE_DB",
+        "tagId": 11,
+        "tagName": "COST_CENTER",
+        "tagSchema": "S1",
+        "tagValues": [
+          "Analytics",
+          "finance"
+        ]
+      }
+    ]
+  }
+}`)
 		require.NoError(t, err)
 
-		assert.Equal(t, []QuotaScopeUser{{UserId: "3", UserName: "CAROL"}}, scope.ExcludedUsers)
-		assert.Equal(t, []QuotaScopeUser{{UserId: "1", UserName: "ALICE"}, {UserId: "2", UserName: "BOB"}}, scope.IncludedUsers)
+		assert.Equal(t, []QuotaScopeUser{{UserId: "22", UserName: "QUOTA_SPIKE_U2"}}, scope.ExcludedUsers)
+		assert.Equal(t, []QuotaScopeUser{{UserId: "41", UserName: "QUOTA_SPIKE_U1"}, {UserId: "42", UserName: "quota_spike_lower_u"}}, scope.IncludedUsers)
+
 		require.Len(t, scope.SharedResources, 2)
-		assert.True(t, scope.SharedResources[0].IsWholeDomain())
-		assert.False(t, scope.SharedResources[1].IsWholeDomain())
-		assert.Equal(t, "CORTEX AGENT", scope.SharedResources[1].Domain)
-		require.NotNil(t, scope.UserTags)
-		assert.Equal(t, "UNION", scope.UserTags.Operator)
-		require.Len(t, scope.UserTags.Tags, 1)
-		assert.Equal(t, NewSchemaObjectIdentifier("COST_MGMT_DB", "TAGS", "COST_CENTER"), scope.UserTags.Tags[0].TagId())
-		assert.Equal(t, []string{"finance"}, scope.UserTags.Tags[0].TagValues)
-	})
-
-	t.Run("guide's sample output shape", func(t *testing.T) {
-		// the guide renders the domain with an underscore, the whole-domain name in brackets, lowercase tag type,
-		// the tag database and schema as typed in the reference, and the tag value in uppercase
-		scope, err := ParseQuotaScope(`{
-			"excluded_users": [],
-			"included_users": [{"user_id": "101", "user_name": "ALICE"}],
-			"shared_resources": [{"domain": "CORTEX_AGENT", "id": -1, "name": "[ALL-AGENTS]"}],
-			"user_tags": {
-				"operator": "UNION",
-				"tags": [{"type": "tag", "tag_database": "cost_mgmt_db", "tag_schema": "tags", "tag_key": "COST_CENTER", "tag_values": ["FINANCE"]}]
-			}
-		}`)
-		require.NoError(t, err)
-
-		require.Len(t, scope.SharedResources, 1)
 		assert.True(t, scope.SharedResources[0].IsWholeDomain())
 		domain, err := scope.SharedResources[0].NormalizedDomain()
 		require.NoError(t, err)
-		assert.Equal(t, QuotaSharedResourceDomainCortexAgent, domain)
-		assert.Equal(t, "101", scope.IncludedUsers[0].UserId.String())
-		assert.Equal(t, NewSchemaObjectIdentifier("cost_mgmt_db", "tags", "COST_CENTER"), scope.UserTags.Tags[0].TagId())
+		assert.Equal(t, QuotaSharedResourceDomainAiFunction, domain)
+		assert.False(t, scope.SharedResources[1].IsWholeDomain())
+		assert.Equal(t, "CORTEX_CODE_CLI", scope.SharedResources[1].Name)
+
+		require.NotNil(t, scope.UserTags)
+		assert.False(t, scope.UserTags.AreExclusions())
+		require.Len(t, scope.UserTags.Tags, 1)
+		assert.Equal(t, NewSchemaObjectIdentifier("QUOTA_SPIKE_DB", "S1", "COST_CENTER"), scope.UserTags.Tags[0].TagId())
+		assert.Equal(t, []string{"Analytics", "finance"}, scope.UserTags.Tags[0].TagValues)
 	})
 
-	t.Run("empty scope", func(t *testing.T) {
-		scope, err := ParseQuotaScope(`{}`)
+	t.Run("captured output of a new quota", func(t *testing.T) {
+		scope, err := ParseQuotaScope(`{
+  "excluded_users": [],
+  "included_users": [],
+  "shared_resources": [],
+  "user_tags": {
+    "operator": "ALL_USERS",
+    "tags": []
+  }
+}`)
 		require.NoError(t, err)
 		assert.Empty(t, scope.SharedResources)
-		assert.Nil(t, scope.UserTags)
+		require.NotNil(t, scope.UserTags)
+		assert.True(t, scope.UserTags.AreExclusions())
+		assert.Empty(t, scope.UserTags.Tags)
+	})
+
+	t.Run("captured output with excluded tags", func(t *testing.T) {
+		scope, err := ParseQuotaScope(`{"excluded_users": [], "included_users": [], "shared_resources": [], "user_tags": {"operator": "ALL_USERS", "tags": [{"tagDatabase": "QUOTA_SPIKE_DB", "tagId": 11, "tagName": "COST_CENTER", "tagSchema": "S1", "tagValues": ["contractor"]}]}}`)
+		require.NoError(t, err)
+		assert.True(t, scope.UserTags.AreExclusions())
+		assert.Equal(t, []string{"contractor"}, scope.UserTags.Tags[0].TagValues)
 	})
 
 	t.Run("invalid json", func(t *testing.T) {
@@ -554,47 +608,39 @@ func TestParseQuotaScope(t *testing.T) {
 	})
 }
 
-func TestParseQuotaConfig(t *testing.T) {
-	limit := func(t *testing.T, config *QuotaConfig, cycle QuotaCycle) *float64 {
-		t.Helper()
-		value, err := config.PerUserLimitFor(cycle)
-		require.NoError(t, err)
-		return value
+func TestQuotaConfig_PerUserLimitFor(t *testing.T) {
+	config := QuotaConfig{PerUserLimit: new(1000), PerUserLimitDaily: new(60)}
+
+	monthly, err := config.PerUserLimitFor(QuotaCycleMonthly)
+	require.NoError(t, err)
+	assert.Equal(t, new(1000), monthly)
+	weekly, err := config.PerUserLimitFor(QuotaCycleWeekly)
+	require.NoError(t, err)
+	assert.Nil(t, weekly)
+	daily, err := config.PerUserLimitFor(QuotaCycleDaily)
+	require.NoError(t, err)
+	assert.Equal(t, new(60), daily)
+	_, err = config.PerUserLimitFor("YEARLY")
+	require.ErrorContains(t, err, "unsupported quota cycle")
+}
+
+func TestParseQuotaAdminEmails(t *testing.T) {
+	testCases := []struct {
+		input    string
+		expected []string
+	}{
+		{input: "", expected: []string{}},
+		{input: "admin1@example.com", expected: []string{"admin1@example.com"}},
+		{input: "admin1@example.com, admin2@example.com", expected: []string{"admin1@example.com", "admin2@example.com"}},
+		{input: `["admin1@example.com", "admin2@example.com"]`, expected: []string{"admin1@example.com", "admin2@example.com"}},
 	}
-
-	t.Run("all keys, upper-cased as in the guide", func(t *testing.T) {
-		// TODO [quota spike]: replace with a captured GET_CONFIG output.
-		config, err := ParseQuotaConfig(`{"PER_USER_LIMIT": 1000, "PER_USER_LIMIT_WEEKLY": "500", "PER_USER_LIMIT_DAILY": 120.5, "BLOCK_ENFORCEMENT_ENABLED": true}`)
-		require.NoError(t, err)
-		assert.Equal(t, new(1000.0), limit(t, config, QuotaCycleMonthly))
-		assert.Equal(t, new(500.0), limit(t, config, QuotaCycleWeekly))
-		assert.Equal(t, new(120.5), limit(t, config, QuotaCycleDaily))
-		assert.Equal(t, new(true), config.BlockEnforcementEnabled)
-	})
-
-	t.Run("no limits set", func(t *testing.T) {
-		config, err := ParseQuotaConfig(`{"PER_USER_LIMIT": null}`)
-		require.NoError(t, err)
-		assert.Nil(t, limit(t, config, QuotaCycleMonthly))
-		assert.Nil(t, limit(t, config, QuotaCycleWeekly))
-		assert.Nil(t, config.BlockEnforcementEnabled)
-	})
-
-	t.Run("non-numeric limit", func(t *testing.T) {
-		_, err := ParseQuotaConfig(`{"PER_USER_LIMIT": "unlimited"}`)
-		require.ErrorContains(t, err, "failed to parse quota config")
-	})
-
-	t.Run("limit as a numeric string", func(t *testing.T) {
-		config, err := ParseQuotaConfig(`{"per_user_limit_daily": "60"}`)
-		require.NoError(t, err)
-		assert.Equal(t, new(60.0), limit(t, config, QuotaCycleDaily))
-	})
-
-	t.Run("invalid json", func(t *testing.T) {
-		_, err := ParseQuotaConfig(`not json`)
-		require.ErrorContains(t, err, "failed to parse quota config")
-	})
+	for _, tc := range testCases {
+		t.Run(tc.input, func(t *testing.T) {
+			emails, err := ParseQuotaAdminEmails(tc.input)
+			require.NoError(t, err)
+			assert.Equal(t, tc.expected, emails)
+		})
+	}
 }
 
 func TestParseQuotaProcedureArguments(t *testing.T) {
@@ -606,7 +652,9 @@ func TestParseQuotaProcedureArguments(t *testing.T) {
 		{input: "[]", expected: []string{}},
 		{input: "null", expected: []string{}},
 		{input: `["a", "b"]`, expected: []string{"a", "b"}},
-		{input: "[\n  \"a\"\n]", expected: []string{"a"}},
+		// as returned by GET_CUSTOM_ACTIONS
+		{input: "[\n  \"other\"\n]", expected: []string{"other"}},
+		{input: "[\n  \"it's\"\n]", expected: []string{"it's"}},
 		{input: "[a, b]", expected: []string{"a", "b"}},
 		{input: "['a', 'b']", expected: []string{"a", "b"}},
 	}

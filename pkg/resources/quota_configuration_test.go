@@ -1,7 +1,6 @@
 package resources
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/Snowflake-Labs/terraform-provider-snowflake/pkg/sdk"
@@ -59,37 +58,36 @@ func Test_quotaConfigurationFromDetails(t *testing.T) {
 			{domain: sdk.QuotaSharedResourceDomainCortexAgent, instance: `"DB"."SCH"."AGENT"`},
 			{domain: sdk.QuotaSharedResourceDomainWarehouse, instance: `"wh"`},
 		},
-		excludedUserTags:   []quotaTagValue{{tag: tagId, raw: "DB.SCH.TAG", value: "b"}},
-		includedUsers:      []string{"alice"},
-		notifyBlockedUsers: true,
-		adminEmails:        []string{"admin@example.com"},
-		notificationThresholds: []quotaNotificationThreshold{
-			{threshold: 80, spendStrategy: sdk.QuotaSpendStrategyProjected, notifyUser: true, cycle: sdk.QuotaCycleWeekly},
-		},
+		userTags:      []quotaTagValue{{tag: tagId, raw: "DB.SCH.TAG", value: "a"}},
+		includedUsers: []string{"alice"},
+		adminEmails:   []string{"Admin@Example.com"},
 	}
 	details := &sdk.QuotaDetails{
 		Scope: sdk.QuotaScope{
 			SharedResources: []sdk.QuotaScopeSharedResource{
 				// returned by its bare name, matched to the configured fully qualified one
 				{Domain: "CORTEX_AGENT", Id: "42", Name: "AGENT"},
-				{Domain: "AI_FUNCTION", Id: "-1", Name: "AI FUNCTION"},
+				{Domain: "AI_FUNCTION", Id: "-1", Name: "[ALL-CORTEX AI FUNCTIONS]"},
 				{Domain: "WAREHOUSE", Id: "7", Name: "wh"},
 				// not configured (e.g. on import): spelled as the configuration would
 				{Domain: "WAREHOUSE", Id: "8", Name: "OTHER"},
+				{Domain: "WAREHOUSE", Id: "9", Name: "with.dot"},
 			},
 			IncludedUsers: []sdk.QuotaScopeUser{{UserId: "1", UserName: "ALICE"}, {UserId: "2", UserName: "BOB"}},
 			UserTags: &sdk.QuotaScopeUserTags{
-				Operator: "UNION",
-				Tags: []sdk.QuotaScopeTag{
-					{Type: "tag", TagDatabase: "DB", TagSchema: "SCH", TagKey: "TAG", TagValues: []string{"a", "b"}},
-					{Type: "EXCLUDE", TagDatabase: "DB", TagSchema: "SCH", TagKey: "TAG", TagValues: []string{"c"}},
-				},
+				Operator: "INTERSECTION",
+				Tags:     []sdk.QuotaScopeTag{{TagDatabase: "DB", TagSchema: "SCH", TagName: "TAG", TagValues: []string{"a", "B"}}},
 			},
 		},
-		Config: sdk.QuotaConfig{PerUserLimit: new(json.Number("1000")), BlockEnforcementEnabled: new(true)},
+		Config: sdk.QuotaConfig{
+			PerUserLimit:                     new(1000),
+			BlockEnforcementEnabled:          true,
+			PerUserBlockNotificationsEnabled: true,
+			AdminEmails:                      []string{"admin@example.com"},
+		},
 		NotificationThresholds: []sdk.QuotaNotificationThreshold{
-			{Threshold: 80, SpendStrategy: sdk.QuotaSpendStrategyProjected, NotifyUser: true},
-			{Threshold: 100, SpendStrategy: sdk.QuotaSpendStrategyActual},
+			{Threshold: 80, SpendStrategy: sdk.QuotaSpendStrategyProjected, NotifyUser: true, Cycle: sdk.QuotaCycleWeekly},
+			{Threshold: 100, SpendStrategy: sdk.QuotaSpendStrategyActual, Cycle: sdk.QuotaCycleMonthly},
 		},
 	}
 
@@ -101,29 +99,61 @@ func Test_quotaConfigurationFromDetails(t *testing.T) {
 		{domain: sdk.QuotaSharedResourceDomainCortexAgent, instance: `"DB"."SCH"."AGENT"`},
 		{domain: sdk.QuotaSharedResourceDomainAiFunction},
 		{domain: sdk.QuotaSharedResourceDomainWarehouse, instance: `"wh"`},
-		{domain: sdk.QuotaSharedResourceDomainWarehouse, instance: `"OTHER"`},
+		{domain: sdk.QuotaSharedResourceDomainWarehouse, instance: "OTHER"},
+		{domain: sdk.QuotaSharedResourceDomainWarehouse, instance: `"with.dot"`},
 	}, remote.sharedResources)
 	assert.Equal(t, []string{"alice", "BOB"}, remote.includedUsers)
+	assert.Equal(t, []string{"Admin@Example.com"}, remote.adminEmails)
 
-	// one included tag per value; tags matching a configured exclusion or marked as excluded are skipped,
-	// and the exclusions themselves are kept from the configuration
+	// one tag per value, values compared as they are
 	require.NotNil(t, remote.userTagsOperator)
-	assert.Equal(t, sdk.QuotaUserTagsOperatorUnion, *remote.userTagsOperator)
-	assert.Equal(t, []quotaTagValue{{tag: tagId, raw: `"DB"."SCH"."TAG"`, value: "a"}}, remote.userTags)
-	assert.Equal(t, current.excludedUserTags, remote.excludedUserTags)
+	assert.Equal(t, sdk.QuotaUserTagsOperatorIntersection, *remote.userTagsOperator)
+	assert.Equal(t, []quotaTagValue{
+		{tag: tagId, raw: "DB.SCH.TAG", value: "a"},
+		{tag: tagId, raw: `"DB"."SCH"."TAG"`, value: "B"},
+	}, remote.userTags)
+	assert.Empty(t, remote.excludedUserTags)
 
 	assert.Equal(t, 1000, remote.perUserLimit(sdk.QuotaCycleMonthly))
 	assert.Equal(t, IntDefault, remote.perUserLimit(sdk.QuotaCycleDaily))
 	assert.True(t, remote.blockEnforcementEnabled)
-
-	// values that can't be read back come from the current configuration
 	assert.True(t, remote.notifyBlockedUsers)
-	assert.Equal(t, []string{"admin@example.com"}, remote.adminEmails)
 	assert.Equal(t, []quotaNotificationThreshold{
 		{threshold: 80, spendStrategy: sdk.QuotaSpendStrategyProjected, notifyUser: true, cycle: sdk.QuotaCycleWeekly},
 		{threshold: 100, spendStrategy: sdk.QuotaSpendStrategyActual, cycle: sdk.QuotaCycleMonthly},
 	}, remote.notificationThresholds)
 	assert.Nil(t, remote.cycleStartAction)
+
+	t.Run("tags with the ALL_USERS operator are the excluded ones", func(t *testing.T) {
+		details := &sdk.QuotaDetails{Scope: sdk.QuotaScope{UserTags: &sdk.QuotaScopeUserTags{
+			Operator: sdk.QuotaScopeUserTagsOperatorAllUsers,
+			Tags:     []sdk.QuotaScopeTag{{TagDatabase: "DB", TagSchema: "SCH", TagName: "TAG", TagValues: []string{"contractor"}}},
+		}}}
+
+		remote, err := quotaConfigurationFromDetails(details, &quotaConfiguration{})
+		require.NoError(t, err)
+
+		assert.Nil(t, remote.userTagsOperator)
+		assert.Empty(t, remote.userTags)
+		assert.Equal(t, []quotaTagValue{{tag: tagId, raw: `"DB"."SCH"."TAG"`, value: "contractor"}}, remote.excludedUserTags)
+	})
+
+	t.Run("a new quota", func(t *testing.T) {
+		details := &sdk.QuotaDetails{
+			Scope:  sdk.QuotaScope{UserTags: &sdk.QuotaScopeUserTags{Operator: sdk.QuotaScopeUserTagsOperatorAllUsers}},
+			Config: sdk.QuotaConfig{PerUserBlockNotificationsEnabled: true},
+		}
+
+		remote, err := quotaConfigurationFromDetails(details, &quotaConfiguration{})
+		require.NoError(t, err)
+
+		assert.Nil(t, remote.userTagsOperator)
+		assert.Empty(t, remote.userTags)
+		assert.Empty(t, remote.excludedUserTags)
+		assert.Equal(t, IntDefault, remote.perUserLimit(sdk.QuotaCycleMonthly))
+		assert.False(t, remote.blockEnforcementEnabled)
+		assert.True(t, remote.notifyBlockedUsers)
+	})
 }
 
 func Test_quotaSharedResource_key(t *testing.T) {
@@ -152,10 +182,10 @@ func Test_quotaDiffByKey(t *testing.T) {
 	assert.Equal(t, []string{"a"}, removed)
 	assert.Equal(t, []string{"c"}, added)
 
-	// unquoted user names are case-insensitive identifiers, quoted ones are exact
+	// user names are resolved case-insensitively by INCLUDE_USERS and EXCLUDE_USERS
 	assert.True(t, quotaKeysEqual([]string{"alice"}, []string{"ALICE"}, quotaUserKey))
-	assert.True(t, quotaKeysEqual([]string{`"ALICE"`}, []string{"alice"}, quotaUserKey))
-	assert.False(t, quotaKeysEqual([]string{`"alice"`}, []string{"ALICE"}, quotaUserKey))
+	assert.True(t, quotaKeysEqual([]string{`"alice"`}, []string{"ALICE"}, quotaUserKey))
+	assert.Equal(t, []string{"alice", "BOB"}, quotaUserNames([]string{`"alice"`, "BOB"}))
 	assert.True(t, quotaKeysEqual([]string{"Admin@Example.com"}, []string{"admin@example.com"}, quotaEmailKey))
 }
 

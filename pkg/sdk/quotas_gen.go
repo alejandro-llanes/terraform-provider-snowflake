@@ -10,6 +10,7 @@ import (
 
 type Quotas interface {
 	Create(ctx context.Context, request *CreateQuotaRequest) error
+	Alter(ctx context.Context, request *AlterQuotaRequest) error
 	Drop(ctx context.Context, request *DropQuotaRequest) error
 	DropSafely(ctx context.Context, id SchemaObjectIdentifier) error
 	Show(ctx context.Context, request *ShowQuotaRequest) ([]Quota, error)
@@ -24,7 +25,7 @@ type Quotas interface {
 	SetPerUserLimit(ctx context.Context, request *SetPerUserLimitQuotaRequest) (*string, error)
 	UnsetPerUserLimit(ctx context.Context, request *UnsetPerUserLimitQuotaRequest) (*string, error)
 	SetBlockEnforcementEnabled(ctx context.Context, request *SetBlockEnforcementEnabledQuotaRequest) (*string, error)
-	GetConfig(ctx context.Context, request *GetConfigQuotaRequest) (*string, error)
+	GetConfig(ctx context.Context, request *GetConfigQuotaRequest) (*QuotaConfig, error)
 	AddNotificationThreshold(ctx context.Context, request *AddNotificationThresholdQuotaRequest) (*string, error)
 	RemoveNotificationThreshold(ctx context.Context, request *RemoveNotificationThresholdQuotaRequest) (*string, error)
 	GetNotificationThresholds(ctx context.Context, request *GetNotificationThresholdsQuotaRequest) ([]QuotaNotificationThreshold, error)
@@ -50,6 +51,24 @@ type CreateQuotaOptions struct {
 	name               SchemaObjectIdentifier `ddl:"identifier"`
 	parens             bool                   `ddl:"static" sql:"()"`
 	Comment            *string                `ddl:"parameter,single_quotes" sql:"COMMENT"`
+}
+
+// AlterQuotaOptions is based on https://docs.snowflake.com/en/user-guide/budgets/per-user-quotas.
+type AlterQuotaOptions struct {
+	alter              bool                    `ddl:"static" sql:"ALTER"`
+	snowflakeCoreQuota bool                    `ddl:"static" sql:"SNOWFLAKE.CORE.QUOTA"`
+	name               SchemaObjectIdentifier  `ddl:"identifier"`
+	RenameTo           *SchemaObjectIdentifier `ddl:"identifier" sql:"RENAME TO"`
+	Set                *QuotaSet               `ddl:"keyword" sql:"SET"`
+	Unset              *QuotaUnset             `ddl:"list,no_parentheses" sql:"UNSET"`
+}
+
+type QuotaSet struct {
+	Comment *string `ddl:"parameter,single_quotes" sql:"COMMENT"`
+}
+
+type QuotaUnset struct {
+	Comment *bool `ddl:"keyword" sql:"COMMENT"`
 }
 
 // DropQuotaOptions is based on https://docs.snowflake.com/en/user-guide/budgets/per-user-quotas.
@@ -139,8 +158,8 @@ type SetUserTagsQuotaOptions struct {
 }
 
 type QuotaSetUserTagsArgs struct {
-	Tags     []QuotaUserTag         `ddl:"list,must_brackets,array_elements"`
-	Operator *QuotaUserTagsOperator `ddl:"keyword,single_quotes"`
+	Tags     []QuotaUserTag        `ddl:"list,must_brackets,array_elements"`
+	Operator QuotaUserTagsOperator `ddl:"keyword,single_quotes"`
 }
 
 type QuotaUserTag struct {
@@ -237,6 +256,30 @@ type GetConfigQuotaOptions struct {
 	args quotaGetConfigArgs     `ddl:"list,must_parentheses"`
 }
 
+type quotaConfigRow struct {
+	QuotaId                          sql.NullString `db:"QUOTA_ID"`
+	PerUserLimit                     sql.NullInt64  `db:"PER_USER_LIMIT"`
+	PerUserLimitWeekly               sql.NullInt64  `db:"PER_USER_LIMIT_WEEKLY"`
+	PerUserLimitDaily                sql.NullInt64  `db:"PER_USER_LIMIT_DAILY"`
+	BlockEnforcementEnabled          bool           `db:"BLOCK_ENFORCEMENT_ENABLED"`
+	PerUserBlockNotificationsEnabled bool           `db:"PER_USER_BLOCK_NOTIFICATIONS_ENABLED"`
+	AdminEmails                      sql.NullString `db:"ADMIN_EMAILS"`
+	AdminLastSentAt                  sql.NullString `db:"ADMIN_LAST_SENT_AT"`
+	RefreshTier                      sql.NullString `db:"REFRESH_TIER"`
+}
+
+type QuotaConfig struct {
+	QuotaId                          *string
+	PerUserLimit                     *int
+	PerUserLimitWeekly               *int
+	PerUserLimitDaily                *int
+	BlockEnforcementEnabled          bool
+	PerUserBlockNotificationsEnabled bool
+	AdminEmails                      []string
+	AdminLastSentAt                  *string
+	RefreshTier                      *string
+}
+
 type quotaGetConfigArgs struct{}
 
 // AddNotificationThresholdQuotaOptions is based on https://docs.snowflake.com/en/user-guide/budgets/per-user-quotas.
@@ -263,6 +306,7 @@ type RemoveNotificationThresholdQuotaOptions struct {
 type QuotaRemoveNotificationThresholdArgs struct {
 	Threshold     int                `ddl:"parameter,no_equals"`
 	SpendStrategy QuotaSpendStrategy `ddl:"keyword,single_quotes"`
+	Cycle         *QuotaCycle        `ddl:"keyword,single_quotes"`
 }
 
 // GetNotificationThresholdsQuotaOptions is based on https://docs.snowflake.com/en/user-guide/budgets/per-user-quotas.
@@ -276,6 +320,7 @@ type quotaNotificationThresholdRow struct {
 	Threshold      int       `db:"THRESHOLD"`
 	SpendStrategy  string    `db:"SPEND_STRATEGY"`
 	NotifyUser     bool      `db:"NOTIFY_USER"`
+	Cycle          string    `db:"CYCLE"`
 	AddedTimestamp time.Time `db:"ADDED_TIMESTAMP"`
 }
 
@@ -283,6 +328,7 @@ type QuotaNotificationThreshold struct {
 	Threshold      int
 	SpendStrategy  QuotaSpendStrategy
 	NotifyUser     bool
+	Cycle          QuotaCycle
 	AddedTimestamp time.Time
 }
 
@@ -426,19 +472,19 @@ type GetCycleStartActionQuotaOptions struct {
 }
 
 type quotaCycleStartActionRow struct {
-	ActionUuid             sql.NullString `db:"ACTION_UUID"`
+	ActionId               sql.NullString `db:"ACTION_ID"`
 	ProcedureFqn           sql.NullString `db:"PROCEDURE_FQN"`
 	ProcedureArgs          sql.NullString `db:"PROCEDURE_ARGS"`
 	AddedTimestamp         sql.NullTime   `db:"ADDED_TIMESTAMP"`
-	LastTriggeredTimestamp sql.NullTime   `db:"LAST_TRIGGERED_TIMESTAMP"`
+	LastTriggerAttemptTime sql.NullTime   `db:"LAST_TRIGGER_ATTEMPT_TIME"`
 }
 
 type QuotaCycleStartAction struct {
-	ActionUuid             *string
+	ActionId               *string
 	ProcedureFqn           *string
 	ProcedureArgs          []string
 	AddedTimestamp         *time.Time
-	LastTriggeredTimestamp *time.Time
+	LastTriggerAttemptTime *time.Time
 }
 
 type quotaGetCycleStartActionArgs struct{}
