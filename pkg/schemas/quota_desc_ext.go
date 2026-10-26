@@ -25,25 +25,29 @@ func (quotaDetailsToSchemaMapper) additionalSchema() map[string]*schema.Schema {
 				"id":     quotaComputedValue(schema.TypeInt),
 				"name":   quotaComputedValue(schema.TypeString),
 			}),
-			"included_users":     quotaComputedStringList(),
-			"excluded_users":     quotaComputedStringList(),
+			"included_users": quotaComputedStringList(),
+			"excluded_users": quotaComputedStringList(),
+			// ALL_USERS when the users are not selected by tags; the tags are then the excluded ones
 			"user_tags_operator": quotaComputedValue(schema.TypeString),
 			"user_tags": quotaComputedNestedList(map[string]*schema.Schema{
-				"type":   quotaComputedValue(schema.TypeString),
 				"tag":    quotaComputedValue(schema.TypeString),
 				"values": quotaComputedStringList(),
 			}),
 		}),
 		"config": quotaComputedNestedList(map[string]*schema.Schema{
-			"per_user_limit":            quotaComputedValue(schema.TypeFloat),
-			"per_user_limit_weekly":     quotaComputedValue(schema.TypeFloat),
-			"per_user_limit_daily":      quotaComputedValue(schema.TypeFloat),
-			"block_enforcement_enabled": quotaComputedValue(schema.TypeBool),
+			"per_user_limit":                       quotaComputedValue(schema.TypeInt),
+			"per_user_limit_weekly":                quotaComputedValue(schema.TypeInt),
+			"per_user_limit_daily":                 quotaComputedValue(schema.TypeInt),
+			"block_enforcement_enabled":            quotaComputedValue(schema.TypeBool),
+			"per_user_block_notifications_enabled": quotaComputedValue(schema.TypeBool),
+			"admin_emails":                         quotaComputedStringList(),
+			"refresh_tier":                         quotaComputedValue(schema.TypeString),
 		}),
 		"notification_thresholds": quotaComputedNestedList(map[string]*schema.Schema{
 			"threshold":       quotaComputedValue(schema.TypeInt),
 			"spend_strategy":  quotaComputedValue(schema.TypeString),
 			"notify_user":     quotaComputedValue(schema.TypeBool),
+			"cycle":           quotaComputedValue(schema.TypeString),
 			"added_timestamp": quotaComputedValue(schema.TypeString),
 		}),
 		"notification_integrations": quotaComputedNestedList(map[string]*schema.Schema{
@@ -61,11 +65,11 @@ func (quotaDetailsToSchemaMapper) additionalSchema() map[string]*schema.Schema {
 			"added_timestamp":           quotaComputedValue(schema.TypeString),
 		}),
 		"cycle_start_action": quotaComputedNestedList(map[string]*schema.Schema{
-			"action_uuid":              quotaComputedValue(schema.TypeString),
-			"procedure":                quotaComputedValue(schema.TypeString),
-			"procedure_arguments":      quotaComputedStringList(),
-			"added_timestamp":          quotaComputedValue(schema.TypeString),
-			"last_triggered_timestamp": quotaComputedValue(schema.TypeString),
+			"action_id":                 quotaComputedValue(schema.TypeString),
+			"procedure":                 quotaComputedValue(schema.TypeString),
+			"procedure_arguments":       quotaComputedStringList(),
+			"added_timestamp":           quotaComputedValue(schema.TypeString),
+			"last_trigger_attempt_time": quotaComputedValue(schema.TypeString),
 		}),
 	}
 }
@@ -80,6 +84,7 @@ func (quotaDetailsToSchemaMapper) additionalToSchema(src *sdk.QuotaDetails, dst 
 			"threshold":       threshold.Threshold,
 			"spend_strategy":  string(threshold.SpendStrategy),
 			"notify_user":     threshold.NotifyUser,
+			"cycle":           string(threshold.Cycle),
 			"added_timestamp": threshold.AddedTimestamp.String(),
 		}
 	}
@@ -118,8 +123,8 @@ func (quotaDetailsToSchemaMapper) additionalToSchema(src *sdk.QuotaDetails, dst 
 	cycleStartAction := make([]map[string]any, 0, 1)
 	if action := src.CycleStartAction; action != nil {
 		actionSchema := map[string]any{"procedure_arguments": action.ProcedureArgs}
-		if action.ActionUuid != nil {
-			actionSchema["action_uuid"] = *action.ActionUuid
+		if action.ActionId != nil {
+			actionSchema["action_id"] = *action.ActionId
 		}
 		if action.ProcedureFqn != nil {
 			actionSchema["procedure"] = *action.ProcedureFqn
@@ -127,8 +132,8 @@ func (quotaDetailsToSchemaMapper) additionalToSchema(src *sdk.QuotaDetails, dst 
 		if action.AddedTimestamp != nil {
 			actionSchema["added_timestamp"] = action.AddedTimestamp.String()
 		}
-		if action.LastTriggeredTimestamp != nil {
-			actionSchema["last_triggered_timestamp"] = action.LastTriggeredTimestamp.String()
+		if action.LastTriggerAttemptTime != nil {
+			actionSchema["last_trigger_attempt_time"] = action.LastTriggerAttemptTime.String()
 		}
 		cycleStartAction = append(cycleStartAction, actionSchema)
 	}
@@ -138,8 +143,13 @@ func (quotaDetailsToSchemaMapper) additionalToSchema(src *sdk.QuotaDetails, dst 
 func quotaScopeToSchema(scope sdk.QuotaScope) map[string]any {
 	sharedResources := make([]map[string]any, len(scope.SharedResources))
 	for i, resource := range scope.SharedResources {
+		// GET_QUOTA_SCOPE returns domains with underscores (e.g. AI_FUNCTION); they're shown in the form used by the configuration.
+		domain := resource.Domain
+		if normalized, err := resource.NormalizedDomain(); err == nil {
+			domain = string(normalized)
+		}
 		resourceSchema := map[string]any{
-			"domain": resource.Domain,
+			"domain": domain,
 			"name":   resource.Name,
 		}
 		if id, err := resource.Id.Int64(); err == nil {
@@ -164,7 +174,6 @@ func quotaScopeToSchema(scope sdk.QuotaScope) map[string]any {
 		scopeSchema["user_tags_operator"] = scope.UserTags.Operator
 		for _, tag := range scope.UserTags.Tags {
 			userTags = append(userTags, map[string]any{
-				"type":   tag.Type,
 				"tag":    tag.TagId().FullyQualifiedName(),
 				"values": tag.TagValues,
 			})
@@ -185,8 +194,11 @@ func quotaConfigToSchema(config sdk.QuotaConfig) map[string]any {
 			configSchema[key] = *limit
 		}
 	}
-	if config.BlockEnforcementEnabled != nil {
-		configSchema["block_enforcement_enabled"] = *config.BlockEnforcementEnabled
+	configSchema["block_enforcement_enabled"] = config.BlockEnforcementEnabled
+	configSchema["per_user_block_notifications_enabled"] = config.PerUserBlockNotificationsEnabled
+	configSchema["admin_emails"] = config.AdminEmails
+	if config.RefreshTier != nil {
+		configSchema["refresh_tier"] = *config.RefreshTier
 	}
 	return configSchema
 }

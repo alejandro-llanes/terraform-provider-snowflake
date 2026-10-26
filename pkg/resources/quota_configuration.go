@@ -65,11 +65,9 @@ type quotaTagValue struct {
 	value string
 }
 
-// key compares tags case-insensitively: the guide's GET_QUOTA_SCOPE example returns the tag parts as typed in the reference
-// and the value upper-cased ("FINANCE" for 'finance').
-// TODO [quota spike]: verify the case of the returned tag parts and values.
+// key compares the tag as an identifier and the value as is (GET_QUOTA_SCOPE returns values with their case preserved).
 func (t quotaTagValue) key() string {
-	return strings.ToUpper(t.tag.FullyQualifiedName() + "=" + t.value)
+	return t.tag.FullyQualifiedName() + "=" + t.value
 }
 
 type quotaNotificationThreshold struct {
@@ -115,13 +113,19 @@ type quotaCycleStartAction struct {
 	arguments []string
 }
 
-// quotaUserKey compares user names as Snowflake identifiers: unquoted names are case-insensitive (GET_QUOTA_SCOPE returns them
-// upper-cased), quoted names are compared as they are.
+// quotaUserKey compares user names case-insensitively: INCLUDE_USERS and EXCLUDE_USERS resolve them that way, and GET_QUOTA_SCOPE
+// returns them as stored (e.g. QUOTA_U1 for 'quota_u1').
 func quotaUserKey(name string) string {
-	if len(name) >= 2 && strings.HasPrefix(name, `"`) && strings.HasSuffix(name, `"`) {
-		return name[1 : len(name)-1]
+	return strings.ToUpper(strings.Trim(name, `"`))
+}
+
+// quotaUserNames returns the user names as INCLUDE_USERS and EXCLUDE_USERS expect them: plain strings, without identifier quotes.
+func quotaUserNames(names []string) []string {
+	result := make([]string, len(names))
+	for i, name := range names {
+		result[i] = strings.Trim(name, `"`)
 	}
-	return strings.ToUpper(name)
+	return result
 }
 
 func quotaEmailKey(email string) string {
@@ -271,44 +275,41 @@ func quotaTagValuesFromRaw(set *schema.Set) ([]quotaTagValue, error) {
 // Values equivalent to the current configuration keep its spelling; values that can't be read back are taken from it.
 func quotaConfigurationFromDetails(details *sdk.QuotaDetails, current *quotaConfiguration) (*quotaConfiguration, error) {
 	remote := &quotaConfiguration{
-		perUserLimits:      make(map[sdk.QuotaCycle]int),
-		notifyBlockedUsers: current.notifyBlockedUsers,
-		adminEmails:        current.adminEmails,
+		perUserLimits:           make(map[sdk.QuotaCycle]int),
+		blockEnforcementEnabled: details.Config.BlockEnforcementEnabled,
+		notifyBlockedUsers:      details.Config.PerUserBlockNotificationsEnabled,
 	}
 
 	for _, resource := range details.Scope.SharedResources {
 		sharedResource := quotaSharedResource{domain: normalizeQuotaDomain(resource)}
-		if !resource.IsWholeDomain() {
+		switch {
+		case resource.IsWholeDomain():
+		case resource.CortexAgentId != nil:
+			// GET_QUOTA_SCOPE returns the agent's name only; DescribeDetails resolves it to the agent in the account
+			sharedResource.instance = resource.CortexAgentId.FullyQualifiedName()
+		default:
 			sharedResource.instance = resource.Name
 		}
 		remote.sharedResources = append(remote.sharedResources, matchCurrentQuotaSharedResource(current.sharedResources, sharedResource))
 	}
 
-	// TODO [quota spike]: GET_QUOTA_SCOPE shows "tag" as the only tag type, so tags excluded with EXCLUDE_USERS('TAG', ...) can't be
-	// told apart from the included ones (or may not be returned at all). Exclusions are kept from the configuration, and tags
-	// matching a configured exclusion are not read as included ones.
-	remote.excludedUserTags = current.excludedUserTags
-	excludedKeys := make(map[string]struct{}, len(current.excludedUserTags))
-	for _, tag := range current.excludedUserTags {
-		excludedKeys[tag.key()] = struct{}{}
-	}
+	// With the ALL_USERS operator the users are not selected by tags, and the tags (if any) are the excluded ones.
 	if userTags := details.Scope.UserTags; userTags != nil {
+		excluded := userTags.AreExclusions()
 		for _, tag := range userTags.Tags {
-			if strings.Contains(strings.ToUpper(tag.Type), "EXCLU") {
-				continue
-			}
 			for _, value := range tag.TagValues {
 				tagValue := quotaTagValue{tag: tag.TagId(), raw: tag.TagId().FullyQualifiedName(), value: value}
-				if _, excluded := excludedKeys[tagValue.key()]; excluded {
-					continue
+				if excluded {
+					remote.excludedUserTags = append(remote.excludedUserTags, preferCurrentQuotaValue(current.excludedUserTags, tagValue, quotaTagValue.key))
+				} else {
+					remote.userTags = append(remote.userTags, preferCurrentQuotaValue(current.userTags, tagValue, quotaTagValue.key))
 				}
-				remote.userTags = append(remote.userTags, preferCurrentQuotaValue(current.userTags, tagValue, quotaTagValue.key))
 			}
 		}
 		if len(remote.userTags) > 0 {
 			operator, err := sdk.ToQuotaUserTagsOperator(userTags.Operator)
 			if err != nil {
-				operator = sdk.QuotaUserTagsOperatorUnion
+				return nil, fmt.Errorf("parsing the user tags operator: %w", err)
 			}
 			remote.userTagsOperator = &operator
 		}
@@ -327,26 +328,19 @@ func quotaConfigurationFromDetails(details *sdk.QuotaDetails, current *quotaConf
 			return nil, err
 		}
 		if limit != nil {
-			remote.perUserLimits[cycle] = int(*limit)
+			remote.perUserLimits[cycle] = *limit
 		}
 	}
-	if details.Config.BlockEnforcementEnabled != nil {
-		remote.blockEnforcementEnabled = *details.Config.BlockEnforcementEnabled
+	for _, email := range details.Config.AdminEmails {
+		remote.adminEmails = append(remote.adminEmails, preferCurrentQuotaValue(current.adminEmails, email, quotaEmailKey))
 	}
 
 	for _, threshold := range details.NotificationThresholds {
-		// TODO [quota spike]: GET_NOTIFICATION_THRESHOLDS doesn't document the cycle; it's taken from the current configuration.
-		cycle := sdk.QuotaCycleMonthly
-		if idx := slices.IndexFunc(current.notificationThresholds, func(t quotaNotificationThreshold) bool {
-			return t.threshold == threshold.Threshold && t.spendStrategy == threshold.SpendStrategy
-		}); idx >= 0 {
-			cycle = current.notificationThresholds[idx].cycle
-		}
 		remote.notificationThresholds = append(remote.notificationThresholds, quotaNotificationThreshold{
 			threshold:     threshold.Threshold,
 			spendStrategy: threshold.SpendStrategy,
 			notifyUser:    threshold.NotifyUser,
-			cycle:         cycle,
+			cycle:         threshold.Cycle,
 		})
 	}
 
@@ -438,8 +432,10 @@ func matchCurrentQuotaSharedResource(current []quotaSharedResource, remote quota
 	return remote.canonical()
 }
 
-// canonical returns the shared resource with its instance spelled the way the configuration would (quoted identifiers for
-// object references), so that an unmatched instance (e.g. on import) doesn't differ from the configuration only by quoting.
+// canonical returns the shared resource with its instance spelled the way the configuration would, so that an unmatched
+// instance (e.g. on import) doesn't differ from the configuration only by quoting: agents by their quoted fully qualified
+// name (as fully_qualified_name of snowflake_cortex_agent), account objects by their plain name (as name of snowflake_warehouse),
+// quoted only when the plain name couldn't be parsed back.
 func (r quotaSharedResource) canonical() quotaSharedResource {
 	switch {
 	case r.instance == "", slices.Contains([]sdk.QuotaSharedResourceDomain{sdk.QuotaSharedResourceDomainAiFunction, sdk.QuotaSharedResourceDomainCortexCode}, r.domain):
@@ -448,8 +444,9 @@ func (r quotaSharedResource) canonical() quotaSharedResource {
 			r.instance = id.FullyQualifiedName()
 		}
 	default:
-		if id, err := sdk.ParseAccountObjectIdentifier(r.instance); err == nil {
-			r.instance = id.FullyQualifiedName()
+		// GET_QUOTA_SCOPE returns the plain object name
+		if strings.ContainsAny(r.instance, `."`) {
+			r.instance = sdk.NewAccountObjectIdentifier(r.instance).FullyQualifiedName()
 		}
 	}
 	return r

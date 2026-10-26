@@ -22,8 +22,8 @@ type QuotaDetails struct {
 	CycleStartAction         *QuotaCycleStartAction
 }
 
-// QuotaScope is the result of GET_QUOTA_SCOPE, following the JSON example in the per-user quotas guide.
-// TODO [quota spike]: verify the JSON shape, the user_id type, and the tag "type" values (included vs. excluded tags).
+// QuotaScope is the result of GET_QUOTA_SCOPE, a JSON value. The shape below was verified against a live account; the user tags
+// differ from the guide's example (camelCase keys, no "type").
 type QuotaScope struct {
 	ExcludedUsers   []QuotaScopeUser           `json:"excluded_users"`
 	IncludedUsers   []QuotaScopeUser           `json:"included_users"`
@@ -41,6 +41,9 @@ type QuotaScopeSharedResource struct {
 	Domain string      `json:"domain"`
 	Id     json.Number `json:"id"`
 	Name   string      `json:"name"`
+	// CortexAgentId is the agent a CORTEX AGENT instance refers to. GET_QUOTA_SCOPE returns the agent's name only;
+	// DescribeDetails resolves it when exactly one agent with that name exists in the account.
+	CortexAgentId *SchemaObjectIdentifier `json:"-"`
 }
 
 // IsWholeDomain reports whether the shared resource covers the whole domain rather than a single instance (id -1).
@@ -49,63 +52,68 @@ func (r QuotaScopeSharedResource) IsWholeDomain() bool {
 	return err == nil && id == -1
 }
 
-// NormalizedDomain maps the domain as returned by GET_QUOTA_SCOPE (the guide's example uses CORTEX_AGENT, with an underscore)
+// NormalizedDomain maps the domain as returned by GET_QUOTA_SCOPE (e.g. CORTEX_AGENT, with an underscore)
 // to the domain accepted by ADD_SHARED_RESOURCE (CORTEX AGENT).
 func (r QuotaScopeSharedResource) NormalizedDomain() (QuotaSharedResourceDomain, error) {
 	return ToQuotaSharedResourceDomain(strings.ReplaceAll(r.Domain, "_", " "))
 }
+
+// QuotaScopeUserTagsOperatorAllUsers is the operator of a quota whose users are not selected by tags. Its tags, if any,
+// are the ones excluded with EXCLUDE_USERS('TAG', ...).
+const QuotaScopeUserTagsOperatorAllUsers = "ALL_USERS"
 
 type QuotaScopeUserTags struct {
 	Operator string          `json:"operator"`
 	Tags     []QuotaScopeTag `json:"tags"`
 }
 
+// AreExclusions reports whether the tags exclude users (operator ALL_USERS) rather than select them (UNION or INTERSECTION).
+func (t QuotaScopeUserTags) AreExclusions() bool {
+	return strings.EqualFold(t.Operator, QuotaScopeUserTagsOperatorAllUsers)
+}
+
 type QuotaScopeTag struct {
-	Type        string   `json:"type"`
-	TagDatabase string   `json:"tag_database"`
-	TagSchema   string   `json:"tag_schema"`
-	TagKey      string   `json:"tag_key"`
-	TagValues   []string `json:"tag_values"`
+	TagId_      json.Number `json:"tagId"`
+	TagDatabase string      `json:"tagDatabase"`
+	TagSchema   string      `json:"tagSchema"`
+	TagName     string      `json:"tagName"`
+	TagValues   []string    `json:"tagValues"`
 }
 
 func (t QuotaScopeTag) TagId() SchemaObjectIdentifier {
-	return NewSchemaObjectIdentifier(t.TagDatabase, t.TagSchema, t.TagKey)
-}
-
-// QuotaConfig is the result of GET_CONFIG. The guide names only the keys below ("including", so there may be more).
-// TODO [quota spike]: verify the JSON shape, and whether the block enforcement email flag and admin emails are returned.
-type QuotaConfig struct {
-	PerUserLimit            *json.Number `json:"per_user_limit"`
-	PerUserLimitWeekly      *json.Number `json:"per_user_limit_weekly"`
-	PerUserLimitDaily       *json.Number `json:"per_user_limit_daily"`
-	BlockEnforcementEnabled *bool        `json:"block_enforcement_enabled"`
+	return NewSchemaObjectIdentifier(t.TagDatabase, t.TagSchema, t.TagName)
 }
 
 // PerUserLimitFor returns the limit of the given cycle, or nil when it isn't set.
-func (c QuotaConfig) PerUserLimitFor(cycle QuotaCycle) (*float64, error) {
-	var limit *json.Number
+func (c QuotaConfig) PerUserLimitFor(cycle QuotaCycle) (*int, error) {
 	switch cycle {
 	case QuotaCycleMonthly:
-		limit = c.PerUserLimit
+		return c.PerUserLimit, nil
 	case QuotaCycleWeekly:
-		limit = c.PerUserLimitWeekly
+		return c.PerUserLimitWeekly, nil
 	case QuotaCycleDaily:
-		limit = c.PerUserLimitDaily
+		return c.PerUserLimitDaily, nil
 	default:
 		return nil, fmt.Errorf("unsupported quota cycle: %s", cycle)
 	}
-	if limit == nil || *limit == "" {
-		return nil, nil
-	}
-	value, err := limit.Float64()
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse the %s per-user limit %q: %w", cycle, *limit, err)
-	}
-	return &value, nil
 }
 
-// ProcedureId parses the PROCEDURE_FQN returned by GET_CUSTOM_ACTIONS.
-// TODO [quota spike]: verify the PROCEDURE_FQN format (quoting, argument types).
+// ParseQuotaAdminEmails parses the ADMIN_EMAILS column of GET_CONFIG.
+// TODO [quota spike]: SET_ADMIN_EMAILS only accepts verified emails, so the column couldn't be verified with a value set;
+// the comma-separated form (as passed to SET_ADMIN_EMAILS) and a JSON array are both accepted.
+func ParseQuotaAdminEmails(value string) ([]string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return []string{}, nil
+	}
+	var emails []string
+	if err := json.Unmarshal([]byte(trimmed), &emails); err == nil {
+		return emails, nil
+	}
+	return ParseCommaSeparatedStringArray(trimmed, true), nil
+}
+
+// ProcedureId parses the PROCEDURE_FQN returned by GET_CUSTOM_ACTIONS (unquoted, e.g. DB.SCH.PROC(VARCHAR)).
 func (a QuotaCustomAction) ProcedureId() (SchemaObjectIdentifierWithArguments, error) {
 	return ParseSchemaObjectIdentifierWithArguments(a.ProcedureFqn)
 }
@@ -126,7 +134,6 @@ func (a QuotaCycleStartAction) ProcedureId() (SchemaObjectIdentifierWithArgument
 // ParseQuotaProcedureArguments parses the PROCEDURE_ARGS column of GET_CUSTOM_ACTIONS and GET_CYCLE_START_ACTION.
 // The column is an ARRAY, which the driver returns as JSON (e.g. ["a", "b"]); the comma-separated form is accepted as a fallback,
 // and an empty (or NULL) value yields no arguments.
-// TODO [quota spike]: confirm the ARRAY representation against a live account.
 func ParseQuotaProcedureArguments(value string) ([]string, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -151,15 +158,6 @@ func ParseQuotaScope(value string) (*QuotaScope, error) {
 	return scope, nil
 }
 
-// ParseQuotaConfig parses the output of GET_CONFIG. JSON keys are matched case-insensitively.
-func ParseQuotaConfig(value string) (*QuotaConfig, error) {
-	config := new(QuotaConfig)
-	if err := json.Unmarshal([]byte(value), config); err != nil {
-		return nil, fmt.Errorf("failed to parse quota config %q: %w", value, err)
-	}
-	return config, nil
-}
-
 func (v *quotas) DescribeDetails(ctx context.Context, id SchemaObjectIdentifier) (*QuotaDetails, error) {
 	details := &QuotaDetails{Id: id}
 
@@ -172,16 +170,15 @@ func (v *quotas) DescribeDetails(ctx context.Context, id SchemaObjectIdentifier)
 		return nil, err
 	}
 	details.Scope = *parsedScope
+	if err := v.resolveCortexAgents(ctx, details.Scope.SharedResources); err != nil {
+		return nil, err
+	}
 
 	config, err := v.GetConfig(ctx, NewGetConfigQuotaRequest(id))
 	if err != nil {
 		return nil, err
 	}
-	parsedConfig, err := ParseQuotaConfig(*config)
-	if err != nil {
-		return nil, err
-	}
-	details.Config = *parsedConfig
+	details.Config = *config
 
 	if details.NotificationThresholds, err = v.GetNotificationThresholds(ctx, NewGetNotificationThresholdsQuotaRequest(id)); err != nil {
 		return nil, err
@@ -203,6 +200,28 @@ func (v *quotas) DescribeDetails(ctx context.Context, id SchemaObjectIdentifier)
 	}
 
 	return details, nil
+}
+
+// resolveCortexAgents sets CortexAgentId of the CORTEX AGENT instances whose name matches exactly one agent in the account.
+func (v *quotas) resolveCortexAgents(ctx context.Context, resources []QuotaScopeSharedResource) error {
+	for i := range resources {
+		resource := &resources[i]
+		domain, err := resource.NormalizedDomain()
+		if err != nil || domain != QuotaSharedResourceDomainCortexAgent || resource.IsWholeDomain() {
+			continue
+		}
+		agents, err := v.client.CortexAgents.Show(ctx, NewShowCortexAgentRequest().
+			WithLike(Like{Pattern: String(resource.Name)}).
+			WithIn(ExtendedIn{In: In{Account: Bool(true)}}))
+		if err != nil {
+			return fmt.Errorf("resolving the Cortex Agent %s of the quota: %w", resource.Name, err)
+		}
+		agents = slices.DeleteFunc(agents, func(agent CortexAgent) bool { return agent.Name != resource.Name })
+		if len(agents) == 1 {
+			resource.CortexAgentId = new(agents[0].ID())
+		}
+	}
+	return nil
 }
 
 // quotaDomainsWithPlainInstances are the domains whose instances are passed by name (e.g. AI_CLASSIFY or CORTEX_CODE_CLI);

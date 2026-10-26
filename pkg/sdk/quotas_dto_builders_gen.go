@@ -25,6 +25,49 @@ func (s *CreateQuotaRequest) WithComment(comment string) *CreateQuotaRequest {
 	return s
 }
 
+func NewAlterQuotaRequest(
+	name SchemaObjectIdentifier,
+) *AlterQuotaRequest {
+	s := AlterQuotaRequest{}
+	s.name = name
+	return &s
+}
+
+func (s *AlterQuotaRequest) WithRenameTo(renameTo SchemaObjectIdentifier) *AlterQuotaRequest {
+	s.RenameTo = &renameTo
+	return s
+}
+
+func (s *AlterQuotaRequest) WithSet(set QuotaSetRequest) *AlterQuotaRequest {
+	s.Set = &set
+	return s
+}
+
+func (s *AlterQuotaRequest) WithUnset(unset QuotaUnsetRequest) *AlterQuotaRequest {
+	s.Unset = &unset
+	return s
+}
+
+func NewQuotaSetRequest() *QuotaSetRequest {
+	s := QuotaSetRequest{}
+	return &s
+}
+
+func (s *QuotaSetRequest) WithComment(comment string) *QuotaSetRequest {
+	s.Comment = &comment
+	return s
+}
+
+func NewQuotaUnsetRequest() *QuotaUnsetRequest {
+	s := QuotaUnsetRequest{}
+	return &s
+}
+
+func (s *QuotaUnsetRequest) WithComment(comment bool) *QuotaUnsetRequest {
+	s.Comment = &comment
+	return s
+}
+
 func NewDropQuotaRequest(
 	name SchemaObjectIdentifier,
 ) *DropQuotaRequest {
@@ -156,15 +199,12 @@ func NewSetUserTagsQuotaRequest(
 
 func NewQuotaSetUserTagsArgsRequest(
 	tags []QuotaUserTagRequest,
+	operator QuotaUserTagsOperator,
 ) *QuotaSetUserTagsArgsRequest {
 	s := QuotaSetUserTagsArgsRequest{}
 	s.Tags = tags
+	s.Operator = operator
 	return &s
-}
-
-func (s *QuotaSetUserTagsArgsRequest) WithOperator(operator QuotaUserTagsOperator) *QuotaSetUserTagsArgsRequest {
-	s.Operator = &operator
-	return s
 }
 
 func NewQuotaUserTagRequest(
@@ -368,6 +408,11 @@ func NewQuotaRemoveNotificationThresholdArgsRequest(
 	s.Threshold = threshold
 	s.SpendStrategy = spendStrategy
 	return &s
+}
+
+func (s *QuotaRemoveNotificationThresholdArgsRequest) WithCycle(cycle QuotaCycle) *QuotaRemoveNotificationThresholdArgsRequest {
+	s.Cycle = &cycle
+	return s
 }
 
 func NewGetNotificationThresholdsQuotaRequest(

@@ -4,6 +4,7 @@ package testint
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/Snowflake-Labs/terraform-provider-snowflake/pkg/acceptance/helpers"
@@ -74,6 +75,38 @@ func TestInt_Quotas(t *testing.T) {
 
 		_, err = client.Quotas.ShowByID(ctx, id)
 		require.ErrorIs(t, err, sdk.ErrObjectNotFound)
+
+		// dropping a missing quota is a not-found error, which DropSafely ignores
+		err = client.Quotas.Drop(ctx, sdk.NewDropQuotaRequest(id))
+		require.ErrorIs(t, err, sdk.ErrObjectNotExistOrAuthorized)
+		require.NoError(t, client.Quotas.DropSafely(ctx, id))
+	})
+
+	t.Run("alter: rename and comment", func(t *testing.T) {
+		quotaId, quotaCleanup := testClientHelper().Quota.Create(t)
+		t.Cleanup(quotaCleanup)
+		newId := testClientHelper().Ids.RandomSchemaObjectIdentifier()
+		t.Cleanup(testClientHelper().Quota.DropFunc(t, newId))
+
+		err := client.Quotas.Alter(ctx, sdk.NewAlterQuotaRequest(quotaId).WithSet(*sdk.NewQuotaSetRequest().WithComment("changed")))
+		require.NoError(t, err)
+		quota, err := client.Quotas.ShowByID(ctx, quotaId)
+		require.NoError(t, err)
+		assert.Equal(t, "changed", *quota.Comment)
+
+		err = client.Quotas.Alter(ctx, sdk.NewAlterQuotaRequest(quotaId).WithUnset(*sdk.NewQuotaUnsetRequest().WithComment(true)))
+		require.NoError(t, err)
+		quota, err = client.Quotas.ShowByID(ctx, quotaId)
+		require.NoError(t, err)
+		assert.Nil(t, quota.Comment)
+
+		err = client.Quotas.Alter(ctx, sdk.NewAlterQuotaRequest(quotaId).WithRenameTo(newId))
+		require.NoError(t, err)
+		_, err = client.Quotas.ShowByID(ctx, quotaId)
+		require.ErrorIs(t, err, sdk.ErrObjectNotFound)
+		quota, err = client.Quotas.ShowByID(ctx, newId)
+		require.NoError(t, err)
+		assert.Equal(t, newId, quota.ID())
 	})
 
 	t.Run("show with like and in", func(t *testing.T) {
@@ -157,7 +190,16 @@ func TestInt_Quotas(t *testing.T) {
 		agents := sharedResourceNamed(t, describe(t, quotaId).Scope, sdk.QuotaSharedResourceDomainCortexAgent)
 		require.Len(t, agents, 1)
 		assert.False(t, agents[0].IsWholeDomain())
-		assert.Contains(t, agents[0].Name, agentId.Name())
+		// GET_QUOTA_SCOPE returns the agent's name only; DescribeDetails resolves it
+		assert.Equal(t, agentId.Name(), agents[0].Name)
+		require.NotNil(t, agents[0].CortexAgentId)
+		assert.Equal(t, agentId, *agents[0].CortexAgentId)
+
+		args, err := sdk.NewQuotaRemoveSharedResourceArgsRequestFromInstance(sdk.QuotaSharedResourceDomainCortexAgent, agentId.FullyQualifiedName())
+		require.NoError(t, err)
+		_, err = client.Quotas.RemoveSharedResource(ctx, sdk.NewRemoveSharedResourceQuotaRequest(quotaId, *args))
+		require.NoError(t, err)
+		assert.Empty(t, describe(t, quotaId).Scope.SharedResources)
 	})
 
 	t.Run("warehouse as a shared resource", func(t *testing.T) {
@@ -190,17 +232,25 @@ func TestInt_Quotas(t *testing.T) {
 		tag, tagCleanup := testClientHelper().Tag.CreateTag(t)
 		t.Cleanup(tagCleanup)
 
-		_, err := client.Quotas.IncludeUsers(ctx, sdk.NewIncludeUsersQuotaRequest(quotaId, *sdk.NewQuotaIncludeUsersArgsRequest([]string{includedUser.ID().Name()})))
-		require.NoError(t, err)
-		_, err = client.Quotas.ExcludeUsers(ctx, sdk.NewExcludeUsersQuotaRequest(quotaId, *sdk.NewQuotaExcludeUsersArgsRequest().
-			WithByUser(*sdk.NewQuotaExcludeUsersByUserRequest([]string{excludedUser.ID().Name()}))))
-		require.NoError(t, err)
-		_, err = client.Quotas.SetUserTags(ctx, sdk.NewSetUserTagsQuotaRequest(quotaId, *sdk.NewQuotaSetUserTagsArgsRequest(
-			[]sdk.QuotaUserTagRequest{*sdk.NewQuotaUserTagRequest(tag.ID(), "finance")},
-		).WithOperator(sdk.QuotaUserTagsOperatorIntersection)))
-		require.NoError(t, err)
-		_, err = client.Quotas.ExcludeUsers(ctx, sdk.NewExcludeUsersQuotaRequest(quotaId, *sdk.NewQuotaExcludeUsersArgsRequest().
-			WithByTag(*sdk.NewQuotaExcludeUsersByTagRequest([]sdk.QuotaExcludedUserTagRequest{*sdk.NewQuotaExcludedUserTagRequest(tag.ID(), "contractor")}))))
+		includeUsers := func(users ...string) {
+			t.Helper()
+			_, err := client.Quotas.IncludeUsers(ctx, sdk.NewIncludeUsersQuotaRequest(quotaId, *sdk.NewQuotaIncludeUsersArgsRequest(users)))
+			require.NoError(t, err)
+		}
+		excludeUsers := func(users ...string) {
+			t.Helper()
+			_, err := client.Quotas.ExcludeUsers(ctx, sdk.NewExcludeUsersQuotaRequest(quotaId, *sdk.NewQuotaExcludeUsersArgsRequest().
+				WithByUser(*sdk.NewQuotaExcludeUsersByUserRequest(users))))
+			require.NoError(t, err)
+		}
+
+		// names are resolved case-insensitively
+		includeUsers(strings.ToLower(includedUser.ID().Name()))
+		excludeUsers(excludedUser.ID().Name())
+		_, err := client.Quotas.SetUserTags(ctx, sdk.NewSetUserTagsQuotaRequest(quotaId, *sdk.NewQuotaSetUserTagsArgsRequest(
+			[]sdk.QuotaUserTagRequest{*sdk.NewQuotaUserTagRequest(tag.ID(), "finance"), *sdk.NewQuotaUserTagRequest(tag.ID(), "Analytics")},
+			sdk.QuotaUserTagsOperatorIntersection,
+		)))
 		require.NoError(t, err)
 
 		scope := describe(t, quotaId).Scope
@@ -208,33 +258,49 @@ func TestInt_Quotas(t *testing.T) {
 		assert.Equal(t, []string{excludedUser.ID().Name()}, userNames(scope.ExcludedUsers))
 		require.NotNil(t, scope.UserTags)
 		assert.Equal(t, string(sdk.QuotaUserTagsOperatorIntersection), scope.UserTags.Operator)
-		require.NotEmpty(t, scope.UserTags.Tags)
+		assert.False(t, scope.UserTags.AreExclusions())
+		require.Len(t, scope.UserTags.Tags, 1)
 		assert.Equal(t, tag.ID(), scope.UserTags.Tags[0].TagId())
+		assert.ElementsMatch(t, []string{"finance", "Analytics"}, scope.UserTags.Tags[0].TagValues)
 
-		// empty arrays clear the user lists
-		_, err = client.Quotas.IncludeUsers(ctx, sdk.NewIncludeUsersQuotaRequest(quotaId, *sdk.NewQuotaIncludeUsersArgsRequest(nil)))
-		require.NoError(t, err)
+		// excluding tags replaces the user tags and clears the included and excluded users
 		_, err = client.Quotas.ExcludeUsers(ctx, sdk.NewExcludeUsersQuotaRequest(quotaId, *sdk.NewQuotaExcludeUsersArgsRequest().
-			WithByUser(*sdk.NewQuotaExcludeUsersByUserRequest(nil))))
+			WithByTag(*sdk.NewQuotaExcludeUsersByTagRequest([]sdk.QuotaExcludedUserTagRequest{*sdk.NewQuotaExcludedUserTagRequest(tag.ID(), "contractor")}))))
 		require.NoError(t, err)
 
 		scope = describe(t, quotaId).Scope
 		assert.Empty(t, scope.IncludedUsers)
 		assert.Empty(t, scope.ExcludedUsers)
+		require.NotNil(t, scope.UserTags)
+		assert.True(t, scope.UserTags.AreExclusions())
+		require.Len(t, scope.UserTags.Tags, 1)
+		assert.Equal(t, []string{"contractor"}, scope.UserTags.Tags[0].TagValues)
 
-		// TODO [quota spike]: verify that an empty array clears the user tags
-		_, err = client.Quotas.SetUserTags(ctx, sdk.NewSetUserTagsQuotaRequest(quotaId, *sdk.NewQuotaSetUserTagsArgsRequest(nil).WithOperator(sdk.QuotaUserTagsOperatorUnion)))
+		// empty arrays clear the user lists, and excluding no tags resets the quota to all users
+		includeUsers(includedUser.ID().Name())
+		includeUsers()
+		excludeUsers()
+		_, err = client.Quotas.ExcludeUsers(ctx, sdk.NewExcludeUsersQuotaRequest(quotaId, *sdk.NewQuotaExcludeUsersArgsRequest().
+			WithByTag(*sdk.NewQuotaExcludeUsersByTagRequest(nil))))
 		require.NoError(t, err)
 
 		scope = describe(t, quotaId).Scope
-		if scope.UserTags != nil {
-			assert.Empty(t, scope.UserTags.Tags)
-		}
+		assert.Empty(t, scope.IncludedUsers)
+		assert.Empty(t, scope.ExcludedUsers)
+		require.NotNil(t, scope.UserTags)
+		assert.True(t, scope.UserTags.AreExclusions())
+		assert.Empty(t, scope.UserTags.Tags)
 	})
 
 	t.Run("per-user limits and block enforcement", func(t *testing.T) {
 		quotaId, _ := quotaScopedToNewUser(t)
 		testClientHelper().Quota.AddSharedResource(t, quotaId, sdk.QuotaSharedResourceDomainAiFunction, "")
+
+		config := describe(t, quotaId).Config
+		assert.Nil(t, config.PerUserLimit)
+		assert.False(t, config.BlockEnforcementEnabled)
+		assert.True(t, config.PerUserBlockNotificationsEnabled)
+		assert.Empty(t, config.AdminEmails)
 
 		testClientHelper().Quota.SetPerUserLimit(t, quotaId, 1000, sdk.QuotaCycleMonthly)
 		testClientHelper().Quota.SetPerUserLimit(t, quotaId, 500, sdk.QuotaCycleWeekly)
@@ -242,47 +308,66 @@ func TestInt_Quotas(t *testing.T) {
 		_, err := client.Quotas.SetBlockEnforcementEnabled(ctx, sdk.NewSetBlockEnforcementEnabledQuotaRequest(quotaId, *sdk.NewQuotaSetBlockEnforcementEnabledArgsRequest(true).WithNotifyUsers(false)))
 		require.NoError(t, err)
 
-		limit := func(config sdk.QuotaConfig, cycle sdk.QuotaCycle) *float64 {
-			value, err := config.PerUserLimitFor(cycle)
+		config = describe(t, quotaId).Config
+		assert.Equal(t, new(1000), config.PerUserLimit)
+		assert.Equal(t, new(500), config.PerUserLimitWeekly)
+		assert.Equal(t, new(120), config.PerUserLimitDaily)
+		assert.True(t, config.BlockEnforcementEnabled)
+		assert.False(t, config.PerUserBlockNotificationsEnabled)
+
+		// decimal limits are rejected
+		_, err = client.Quotas.SetPerUserLimit(ctx, sdk.NewSetPerUserLimitQuotaRequest(quotaId, *sdk.NewQuotaSetPerUserLimitArgsRequest(0)))
+		require.ErrorContains(t, err, "Invalid per-user limit")
+
+		for _, cycle := range []sdk.QuotaCycle{sdk.QuotaCycleMonthly, sdk.QuotaCycleWeekly} {
+			_, err = client.Quotas.UnsetPerUserLimit(ctx, sdk.NewUnsetPerUserLimitQuotaRequest(quotaId, *sdk.NewQuotaUnsetPerUserLimitArgsRequest(cycle)))
 			require.NoError(t, err)
-			return value
 		}
-
-		config := describe(t, quotaId).Config
-		assert.Equal(t, new(1000.0), limit(config, sdk.QuotaCycleMonthly))
-		assert.Equal(t, new(500.0), limit(config, sdk.QuotaCycleWeekly))
-		assert.Equal(t, new(120.0), limit(config, sdk.QuotaCycleDaily))
-		assert.Equal(t, new(true), config.BlockEnforcementEnabled)
-
-		_, err = client.Quotas.UnsetPerUserLimit(ctx, sdk.NewUnsetPerUserLimitQuotaRequest(quotaId, *sdk.NewQuotaUnsetPerUserLimitArgsRequest(sdk.QuotaCycleWeekly)))
-		require.NoError(t, err)
-		_, err = client.Quotas.SetBlockEnforcementEnabled(ctx, sdk.NewSetBlockEnforcementEnabledQuotaRequest(quotaId, *sdk.NewQuotaSetBlockEnforcementEnabledArgsRequest(false)))
+		_, err = client.Quotas.SetBlockEnforcementEnabled(ctx, sdk.NewSetBlockEnforcementEnabledQuotaRequest(quotaId, *sdk.NewQuotaSetBlockEnforcementEnabledArgsRequest(false).WithNotifyUsers(true)))
 		require.NoError(t, err)
 
 		config = describe(t, quotaId).Config
-		assert.Equal(t, new(1000.0), limit(config, sdk.QuotaCycleMonthly))
-		assert.Nil(t, limit(config, sdk.QuotaCycleWeekly))
-		assert.Equal(t, new(false), config.BlockEnforcementEnabled)
+		assert.Nil(t, config.PerUserLimit)
+		assert.Nil(t, config.PerUserLimitWeekly)
+		assert.Equal(t, new(120), config.PerUserLimitDaily)
+		assert.False(t, config.BlockEnforcementEnabled)
+		assert.True(t, config.PerUserBlockNotificationsEnabled)
 	})
 
 	t.Run("notification thresholds", func(t *testing.T) {
 		quotaId, quotaCleanup := testClientHelper().Quota.Create(t)
 		t.Cleanup(quotaCleanup)
 
-		_, err := client.Quotas.AddNotificationThreshold(ctx, sdk.NewAddNotificationThresholdQuotaRequest(quotaId,
-			*sdk.NewQuotaAddNotificationThresholdArgsRequest(80, sdk.QuotaSpendStrategyProjected, true, sdk.QuotaCycleMonthly)))
-		require.NoError(t, err)
-		_, err = client.Quotas.AddNotificationThreshold(ctx, sdk.NewAddNotificationThresholdQuotaRequest(quotaId,
-			*sdk.NewQuotaAddNotificationThresholdArgsRequest(100, sdk.QuotaSpendStrategyActual, false, sdk.QuotaCycleDaily)))
-		require.NoError(t, err)
+		addThreshold := func(threshold int, strategy sdk.QuotaSpendStrategy, notifyUser bool, cycle sdk.QuotaCycle) {
+			t.Helper()
+			_, err := client.Quotas.AddNotificationThreshold(ctx, sdk.NewAddNotificationThresholdQuotaRequest(quotaId,
+				*sdk.NewQuotaAddNotificationThresholdArgsRequest(threshold, strategy, notifyUser, cycle)))
+			require.NoError(t, err)
+		}
+		// thresholds are identified by (threshold, spend strategy, cycle)
+		addThreshold(80, sdk.QuotaSpendStrategyProjected, true, sdk.QuotaCycleMonthly)
+		addThreshold(80, sdk.QuotaSpendStrategyProjected, false, sdk.QuotaCycleDaily)
+		addThreshold(1000, sdk.QuotaSpendStrategyActual, false, sdk.QuotaCycleWeekly)
 
 		thresholds, err := client.Quotas.GetNotificationThresholds(ctx, sdk.NewGetNotificationThresholdsQuotaRequest(quotaId))
 		require.NoError(t, err)
-		require.Len(t, thresholds, 2)
+		require.Len(t, thresholds, 3)
 		assert.True(t, slices.ContainsFunc(thresholds, func(threshold sdk.QuotaNotificationThreshold) bool {
-			return threshold.Threshold == 80 && threshold.SpendStrategy == sdk.QuotaSpendStrategyProjected && threshold.NotifyUser
+			return threshold.Threshold == 80 && threshold.SpendStrategy == sdk.QuotaSpendStrategyProjected && !threshold.NotifyUser && threshold.Cycle == sdk.QuotaCycleDaily
 		}))
 
+		_, err = client.Quotas.RemoveNotificationThreshold(ctx, sdk.NewRemoveNotificationThresholdQuotaRequest(quotaId,
+			*sdk.NewQuotaRemoveNotificationThresholdArgsRequest(80, sdk.QuotaSpendStrategyProjected).WithCycle(sdk.QuotaCycleDaily)))
+		require.NoError(t, err)
+
+		thresholds, err = client.Quotas.GetNotificationThresholds(ctx, sdk.NewGetNotificationThresholdsQuotaRequest(quotaId))
+		require.NoError(t, err)
+		require.Len(t, thresholds, 2)
+		assert.False(t, slices.ContainsFunc(thresholds, func(threshold sdk.QuotaNotificationThreshold) bool {
+			return threshold.Cycle == sdk.QuotaCycleDaily
+		}))
+
+		// without the cycle, the monthly threshold is removed
 		_, err = client.Quotas.RemoveNotificationThreshold(ctx, sdk.NewRemoveNotificationThresholdQuotaRequest(quotaId,
 			*sdk.NewQuotaRemoveNotificationThresholdArgsRequest(80, sdk.QuotaSpendStrategyProjected)))
 		require.NoError(t, err)
@@ -290,10 +375,12 @@ func TestInt_Quotas(t *testing.T) {
 		thresholds, err = client.Quotas.GetNotificationThresholds(ctx, sdk.NewGetNotificationThresholdsQuotaRequest(quotaId))
 		require.NoError(t, err)
 		require.Len(t, thresholds, 1)
-		assert.Equal(t, 100, thresholds[0].Threshold)
-		assert.Equal(t, sdk.QuotaSpendStrategyActual, thresholds[0].SpendStrategy)
+		assert.Equal(t, 1000, thresholds[0].Threshold)
+		assert.Equal(t, sdk.QuotaCycleWeekly, thresholds[0].Cycle)
 	})
 
+	// Snowflake accepts only email integrations with verified recipients and verified admin emails; helpers.VerifiedEmail is verified
+	// in the accounts the tests run in.
 	t.Run("notification integrations and admin emails", func(t *testing.T) {
 		quotaId, quotaCleanup := testClientHelper().Quota.Create(t)
 		t.Cleanup(quotaCleanup)
@@ -322,37 +409,52 @@ func TestInt_Quotas(t *testing.T) {
 	t.Run("custom actions", func(t *testing.T) {
 		quotaId, quotaCleanup := testClientHelper().Quota.Create(t)
 		t.Cleanup(quotaCleanup)
+		// the first argument receives the IDs of the users who crossed the threshold; extra arguments fill the remaining ones
 		procedure, procedureCleanup := testClientHelper().Procedure.Create(t, sdk.DataTypeVARCHAR)
 		t.Cleanup(procedureCleanup)
 		grantProcedureToSnowflakeApplication(t, procedure.ID())
+		procedureWithArgument, procedureWithArgumentCleanup := testClientHelper().Procedure.Create(t, sdk.DataTypeVARCHAR, sdk.DataTypeVARCHAR)
+		t.Cleanup(procedureWithArgumentCleanup)
+		t.Cleanup(testClientHelper().Grant.GrantUsageOnProcedureToSnowflakeApplication(t, procedureWithArgument.ID()))
 
+		addAction := func(procedureId sdk.SchemaObjectIdentifierWithArguments, arguments []string, strategy sdk.QuotaSpendStrategy, threshold int) {
+			t.Helper()
+			_, err := client.Quotas.AddCustomAction(ctx, sdk.NewAddCustomActionQuotaRequest(quotaId,
+				*sdk.NewQuotaAddCustomActionArgsRequest(procedureId, arguments, strategy, threshold)))
+			require.NoError(t, err)
+		}
+		addAction(procedure.ID(), nil, sdk.QuotaSpendStrategyActual, 100)
+		addAction(procedure.ID(), nil, sdk.QuotaSpendStrategyProjected, 100)
+		addAction(procedureWithArgument.ID(), []string{"it's"}, sdk.QuotaSpendStrategyProjected, 90)
+
+		// the number of extra arguments must match the procedure's remaining parameters
 		_, err := client.Quotas.AddCustomAction(ctx, sdk.NewAddCustomActionQuotaRequest(quotaId,
-			*sdk.NewQuotaAddCustomActionArgsRequest(procedure.ID(), nil, sdk.QuotaSpendStrategyActual, 100)))
-		require.NoError(t, err)
-		_, err = client.Quotas.AddCustomAction(ctx, sdk.NewAddCustomActionQuotaRequest(quotaId,
-			*sdk.NewQuotaAddCustomActionArgsRequest(procedure.ID(), []string{"arg"}, sdk.QuotaSpendStrategyProjected, 90)))
-		require.NoError(t, err)
+			*sdk.NewQuotaAddCustomActionArgsRequest(procedure.ID(), []string{"extra"}, sdk.QuotaSpendStrategyActual, 50)))
+		require.ErrorContains(t, err, "ARGUMENTS_SIZE_MISMATCH")
 
 		actions, err := client.Quotas.GetCustomActions(ctx, sdk.NewGetCustomActionsQuotaRequest(quotaId))
 		require.NoError(t, err)
-		require.Len(t, actions, 2)
+		require.Len(t, actions, 3)
 		for _, action := range actions {
 			procedureId, err := action.ProcedureId()
 			require.NoError(t, err)
-			assert.Equal(t, procedure.ID().FullyQualifiedName(), procedureId.FullyQualifiedName())
+			assert.Contains(t, []string{procedure.ID().FullyQualifiedName(), procedureWithArgument.ID().FullyQualifiedName()}, procedureId.FullyQualifiedName())
 			assert.NotEmpty(t, action.ActionId)
 		}
 
-		// the procedure is removed by the PROCEDURE_FQN returned by GET_CUSTOM_ACTIONS
+		// removing by threshold and procedure removes the actions of both spend strategies;
+		// the procedure is passed as the PROCEDURE_FQN returned by GET_CUSTOM_ACTIONS
+		idx := slices.IndexFunc(actions, func(action sdk.QuotaCustomAction) bool { return action.Threshold == 100 })
+		require.GreaterOrEqual(t, idx, 0)
 		_, err = client.Quotas.RemoveCustomActions(ctx, sdk.NewRemoveCustomActionsQuotaRequest(quotaId,
-			*sdk.NewQuotaRemoveCustomActionsArgsRequest().WithThreshold(100).WithProcedureFqn(actions[0].ProcedureFqn)))
+			*sdk.NewQuotaRemoveCustomActionsArgsRequest().WithThreshold(100).WithProcedureFqn(actions[idx].ProcedureFqn)))
 		require.NoError(t, err)
 
 		actions, err = client.Quotas.GetCustomActions(ctx, sdk.NewGetCustomActionsQuotaRequest(quotaId))
 		require.NoError(t, err)
 		require.Len(t, actions, 1)
 		assert.Equal(t, 90, actions[0].Threshold)
-		assert.Equal(t, []string{"arg"}, actions[0].ProcedureArgs)
+		assert.Equal(t, []string{"it's"}, actions[0].ProcedureArgs)
 
 		_, err = client.Quotas.RemoveCustomActions(ctx, sdk.NewRemoveCustomActionsQuotaRequest(quotaId, *sdk.NewQuotaRemoveCustomActionsArgsRequest()))
 		require.NoError(t, err)

@@ -12,6 +12,7 @@ import (
 var (
 	_ Quotas                                       = (*quotas)(nil)
 	_ convertibleRow[Quota]                        = new(quotaDBRow)
+	_ convertibleRow[QuotaConfig]                  = new(quotaConfigRow)
 	_ convertibleRow[QuotaNotificationThreshold]   = new(quotaNotificationThresholdRow)
 	_ convertibleRow[QuotaNotificationIntegration] = new(quotaNotificationIntegrationRow)
 	_ convertibleRow[QuotaCustomAction]            = new(quotaCustomActionRow)
@@ -23,6 +24,11 @@ type quotas struct {
 }
 
 func (v *quotas) Create(ctx context.Context, request *CreateQuotaRequest) error {
+	opts := request.toOpts()
+	return validateAndExec(v.client, ctx, opts)
+}
+
+func (v *quotas) Alter(ctx context.Context, request *AlterQuotaRequest) error {
 	opts := request.toOpts()
 	return validateAndExec(v.client, ctx, opts)
 }
@@ -96,8 +102,13 @@ func (v *quotas) SetBlockEnforcementEnabled(ctx context.Context, request *SetBlo
 	return validateAndQueryOne[string](v.client, ctx, request.toOpts())
 }
 
-func (v *quotas) GetConfig(ctx context.Context, request *GetConfigQuotaRequest) (*string, error) {
-	return validateAndQueryOne[string](v.client, ctx, request.toOpts())
+func (v *quotas) GetConfig(ctx context.Context, request *GetConfigQuotaRequest) (*QuotaConfig, error) {
+	opts := request.toOpts()
+	result, err := validateAndQueryOne[quotaConfigRow](v.client, ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	return conversionErrorWrapped(result.convert())
 }
 
 func (v *quotas) AddNotificationThreshold(ctx context.Context, request *AddNotificationThresholdQuotaRequest) (*string, error) {
@@ -178,6 +189,24 @@ func (r *CreateQuotaRequest) toOpts() *CreateQuotaOptions {
 		IfNotExists: r.IfNotExists,
 		name:        r.name,
 		Comment:     r.Comment,
+	}
+	return opts
+}
+
+func (r *AlterQuotaRequest) toOpts() *AlterQuotaOptions {
+	opts := &AlterQuotaOptions{
+		name:     r.name,
+		RenameTo: r.RenameTo,
+	}
+	if r.Set != nil {
+		opts.Set = &QuotaSet{
+			Comment: r.Set.Comment,
+		}
+	}
+	if r.Unset != nil {
+		opts.Unset = &QuotaUnset{
+			Comment: r.Unset.Comment,
+		}
 	}
 	return opts
 }
@@ -345,6 +374,27 @@ func (r *GetConfigQuotaRequest) toOpts() *GetConfigQuotaOptions {
 	return opts
 }
 
+func (r quotaConfigRow) convert() (*QuotaConfig, error) {
+	result := &QuotaConfig{
+		BlockEnforcementEnabled:          r.BlockEnforcementEnabled,
+		PerUserBlockNotificationsEnabled: r.PerUserBlockNotificationsEnabled,
+	}
+	mapNullString(&result.QuotaId, r.QuotaId)
+	mapNullInt(&result.PerUserLimit, r.PerUserLimit)
+	mapNullInt(&result.PerUserLimitWeekly, r.PerUserLimitWeekly)
+	mapNullInt(&result.PerUserLimitDaily, r.PerUserLimitDaily)
+	if r.AdminEmails.Valid {
+		if v, err := ParseQuotaAdminEmails(r.AdminEmails.String); err != nil {
+			return nil, fmt.Errorf("parsing string: %w", err)
+		} else {
+			result.AdminEmails = v
+		}
+	}
+	mapNullString(&result.AdminLastSentAt, r.AdminLastSentAt)
+	mapNullString(&result.RefreshTier, r.RefreshTier)
+	return result, nil
+}
+
 func (r *AddNotificationThresholdQuotaRequest) toOpts() *AddNotificationThresholdQuotaOptions {
 	opts := &AddNotificationThresholdQuotaOptions{
 		name: r.name,
@@ -365,6 +415,7 @@ func (r *RemoveNotificationThresholdQuotaRequest) toOpts() *RemoveNotificationTh
 	opts.args = QuotaRemoveNotificationThresholdArgs{
 		Threshold:     r.args.Threshold,
 		SpendStrategy: r.args.SpendStrategy,
+		Cycle:         r.args.Cycle,
 	}
 	return opts
 }
@@ -383,6 +434,7 @@ func (r quotaNotificationThresholdRow) convert() (*QuotaNotificationThreshold, e
 		AddedTimestamp: r.AddedTimestamp,
 	}
 	mapStringWithMapping(&result.SpendStrategy, r.SpendStrategy, ToQuotaSpendStrategy)
+	mapStringWithMapping(&result.Cycle, r.Cycle, ToQuotaCycle)
 	return result, nil
 }
 
@@ -507,7 +559,7 @@ func (r *GetCycleStartActionQuotaRequest) toOpts() *GetCycleStartActionQuotaOpti
 
 func (r quotaCycleStartActionRow) convert() (*QuotaCycleStartAction, error) {
 	result := &QuotaCycleStartAction{}
-	mapNullString(&result.ActionUuid, r.ActionUuid)
+	mapNullString(&result.ActionId, r.ActionId)
 	mapNullString(&result.ProcedureFqn, r.ProcedureFqn)
 	if r.ProcedureArgs.Valid {
 		if v, err := ParseQuotaProcedureArguments(r.ProcedureArgs.String); err != nil {
@@ -517,6 +569,6 @@ func (r quotaCycleStartActionRow) convert() (*QuotaCycleStartAction, error) {
 		}
 	}
 	mapNullTime(&result.AddedTimestamp, r.AddedTimestamp)
-	mapNullTime(&result.LastTriggeredTimestamp, r.LastTriggeredTimestamp)
+	mapNullTime(&result.LastTriggerAttemptTime, r.LastTriggerAttemptTime)
 	return result, nil
 }

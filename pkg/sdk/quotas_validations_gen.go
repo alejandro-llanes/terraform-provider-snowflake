@@ -6,6 +6,7 @@ import "fmt"
 
 var (
 	_ validatable = new(CreateQuotaOptions)
+	_ validatable = new(AlterQuotaOptions)
 	_ validatable = new(DropQuotaOptions)
 	_ validatable = new(ShowQuotaOptions)
 	_ validatable = new(AddSharedResourceQuotaOptions)
@@ -43,6 +44,30 @@ func (opts *CreateQuotaOptions) validate() error {
 	}
 	if everyValueSet(opts.OrReplace, opts.IfNotExists) {
 		errs = append(errs, errOneOf("CreateQuotaOptions", "OrReplace", "IfNotExists"))
+	}
+	return JoinErrors(errs...)
+}
+
+func (opts *AlterQuotaOptions) validate() error {
+	if opts == nil {
+		return ErrNilOptions
+	}
+	var errs []error
+	if !ValidObjectIdentifier(opts.name) {
+		errs = append(errs, errInvalidIdentifier("AlterQuotaOptions", "name"))
+	}
+	if !exactlyOneValueSet(opts.RenameTo, opts.Set, opts.Unset) {
+		errs = append(errs, errExactlyOneOf("AlterQuotaOptions", "RenameTo", "Set", "Unset"))
+	}
+	if valueSet(opts.Set) {
+		if !anyValueSet(opts.Set.Comment) {
+			errs = append(errs, errAtLeastOneOf("AlterQuotaOptions.Set", "Comment"))
+		}
+	}
+	if valueSet(opts.Unset) {
+		if !anyValueSet(opts.Unset.Comment) {
+			errs = append(errs, errAtLeastOneOf("AlterQuotaOptions.Unset", "Comment"))
+		}
 	}
 	return JoinErrors(errs...)
 }

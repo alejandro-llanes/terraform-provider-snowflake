@@ -6,8 +6,8 @@ import (
 )
 
 // Per-user quotas are documented only in the user guide (https://docs.snowflake.com/en/user-guide/budgets/per-user-quotas);
-// there is no class reference yet. The syntax below follows the guide's examples. Where the guide is silent, it mirrors
-// the BUDGET class and is marked with "TODO [quota spike]" until verified against a live account.
+// there is no class reference yet. The commands, method signatures and result shapes below were verified against a live account
+// where the guide is silent or differs from it. The parts that couldn't be verified are marked with "TODO [quota spike]".
 
 const quotasDocs = "https://docs.snowflake.com/en/user-guide/budgets/per-user-quotas"
 
@@ -43,7 +43,7 @@ func quotaSharedResourceArgs(name string) *g.QueryStruct {
 		OptionalText("InstanceName", g.KeywordOptions().SingleQuotes()).
 		OptionalIdentifier("Warehouse", g.KindOfT[sdkcommons.AccountObjectIdentifier](), reference("WAREHOUSE")).
 		OptionalIdentifier("CortexAgent", g.KindOfT[sdkcommons.SchemaObjectIdentifier](), reference("CORTEX AGENT")).
-		// TODO [quota spike]: verify the identifier kind and reference type of Snowflake Intelligence and AI Gateway objects.
+		// TODO [quota spike]: the reference types are accepted, but no Snowflake Intelligence or AI Gateway object was available to verify them.
 		OptionalIdentifier("SnowflakeIntelligence", g.KindOfT[sdkcommons.AccountObjectIdentifier](), reference("SNOWFLAKE INTELLIGENCE")).
 		OptionalIdentifier("AiGateway", g.KindOfT[sdkcommons.AccountObjectIdentifier](), reference("AI GATEWAY")).
 		WithValidation(g.MoreThanOneValueSet, "InstanceName", "Warehouse", "CortexAgent", "SnowflakeIntelligence", "AiGateway").
@@ -58,13 +58,15 @@ func quotaTagValue(name string) *g.QueryStruct {
 		WithValidation(g.ValidIdentifier, "Tag")
 }
 
-// SET_USER_TAGS overwrites the user tags; the guide's signature shows the operator as required (UNION is the documented default).
+// SET_USER_TAGS replaces the tags that select the users (and any tags excluded with EXCLUDE_USERS('TAG', ...)).
+// The operator is required; the one-argument form is rejected.
 var quotaSetUserTagsArgs = g.NewQueryStruct("SetUserTagsArgs").
 	ListQueryStructField("Tags", quotaTagValue("QuotaUserTag"), g.ListOptions().Required().MustBrackets().ArrayElements()).
-	OptionalEnum("Operator", QuotaUserTagsOperatorEnumDef, g.KeywordOptions().SingleQuotes())
+	Enum("Operator", QuotaUserTagsOperatorEnumDef, g.KeywordOptions().SingleQuotes().Required())
 
 // EXCLUDE_USERS has two forms: ('TAG', [[<tag>, '<value>'], ...]) and ('USER', ['<user>', ...]).
-// Like INCLUDE_USERS, calls accumulate; an empty array clears the list.
+// The 'USER' form accumulates like INCLUDE_USERS, and an empty array clears the list. The 'TAG' form replaces the user tags
+// (the quota then applies to all users without the given tags) and also clears the included and excluded users.
 var quotaExcludeUsersArgs = g.NewQueryStruct("ExcludeUsersArgs").
 	OptionalQueryStructField(
 		"ByTag",
@@ -82,43 +84,50 @@ var quotaExcludeUsersArgs = g.NewQueryStruct("ExcludeUsersArgs").
 	).
 	WithValidation(g.ExactlyOneValueSet, "ByTag", "ByUser")
 
-// INCLUDE_USERS calls accumulate; an empty array clears the list.
+// INCLUDE_USERS calls accumulate; an empty array clears the list. User names are resolved case-insensitively.
 var quotaIncludeUsersArgs = g.NewQueryStruct("IncludeUsersArgs").
 	List("Users", "string", g.ListOptions().Required().MustBrackets().SingleQuotes())
 
-// TODO [quota spike]: verify whether limits accept decimal credit values.
+// The limit must be a positive integer no greater than 1000000000.
 var quotaSetPerUserLimitArgs = g.NewQueryStruct("SetPerUserLimitArgs").
 	PredefinedQueryStructField("Limit", "int", g.ParameterOptions().NoEquals().Required()).
 	OptionalEnum("Cycle", QuotaCycleEnumDef, g.KeywordOptions().SingleQuotes())
 
-// TODO [quota spike]: the guide only shows UNSET_PER_USER_LIMIT('WEEKLY'); verify how the monthly limit is unset.
 var quotaUnsetPerUserLimitArgs = g.NewQueryStruct("UnsetPerUserLimitArgs").
 	Enum("Cycle", QuotaCycleEnumDef, g.KeywordOptions().SingleQuotes().Required())
 
+// The one-argument form also disables the per-user block notifications, so NotifyUsers should always be passed.
 var quotaSetBlockEnforcementEnabledArgs = g.NewQueryStruct("SetBlockEnforcementEnabledArgs").
 	PredefinedQueryStructField("Enabled", "bool", g.ParameterOptions().NoEquals().Required()).
 	PredefinedQueryStructField("NotifyUsers", "*bool", g.ParameterOptions().NoEquals())
 
+// The threshold must be greater than 0 and no greater than 1000; all four arguments are required.
 var quotaAddNotificationThresholdArgs = g.NewQueryStruct("AddNotificationThresholdArgs").
 	PredefinedQueryStructField("Threshold", "int", g.ParameterOptions().NoEquals().Required()).
 	Enum("SpendStrategy", QuotaSpendStrategyEnumDef, g.KeywordOptions().SingleQuotes().Required()).
 	PredefinedQueryStructField("NotifyUser", "bool", g.ParameterOptions().NoEquals().Required()).
 	Enum("Cycle", QuotaCycleEnumDef, g.KeywordOptions().SingleQuotes().Required())
 
+// Thresholds are identified by (threshold, spend strategy, cycle); without the cycle, the monthly threshold is removed.
 var quotaRemoveNotificationThresholdArgs = g.NewQueryStruct("RemoveNotificationThresholdArgs").
 	PredefinedQueryStructField("Threshold", "int", g.ParameterOptions().NoEquals().Required()).
-	Enum("SpendStrategy", QuotaSpendStrategyEnumDef, g.KeywordOptions().SingleQuotes().Required())
+	Enum("SpendStrategy", QuotaSpendStrategyEnumDef, g.KeywordOptions().SingleQuotes().Required()).
+	OptionalEnum("Cycle", QuotaCycleEnumDef, g.KeywordOptions().SingleQuotes())
 
+// TODO [quota spike]: an email integration without verified recipients is rejected, so adding an integration couldn't be verified.
 func quotaNotificationIntegrationArgs(name string) *g.QueryStruct {
 	return g.NewQueryStruct(name).
 		Identifier("Integration", g.KindOfT[sdkcommons.AccountObjectIdentifier](), g.IdentifierOptions().SingleQuotes().Required()).
 		WithValidation(g.ValidIdentifier, "Integration")
 }
 
-// SET_ADMIN_EMAILS takes a single string with comma-separated emails.
+// SET_ADMIN_EMAILS takes a single string with comma-separated emails, which must be verified emails of users in the account;
+// an empty string clears them.
 var quotaSetAdminEmailsArgs = g.NewQueryStruct("SetAdminEmailsArgs").
 	Text("Emails", g.KeywordOptions().SingleQuotes().Required())
 
+// The arguments are passed after the IDs of the users who crossed the threshold, so their number must match the procedure's
+// remaining parameters.
 var quotaAddCustomActionArgs = g.NewQueryStruct("AddCustomActionArgs").
 	Identifier("Procedure", g.KindOfT[sdkcommons.SchemaObjectIdentifierWithArguments](), g.IdentifierOptions().Required().SystemReference("PROCEDURE")).
 	List("Arguments", "string", g.ListOptions().Required().MustBrackets().SingleQuotes()).
@@ -126,9 +135,8 @@ var quotaAddCustomActionArgs = g.NewQueryStruct("AddCustomActionArgs").
 	PredefinedQueryStructField("Threshold", "int", g.ParameterOptions().NoEquals().Required()).
 	WithValidation(g.ValidIdentifier, "Procedure")
 
-// REMOVE_CUSTOM_ACTIONS([<threshold>[, '<procedure fqn with argument types>']]); the arguments are positional.
-// The procedure is passed as the PROCEDURE_FQN string returned by GET_CUSTOM_ACTIONS, so that it matches the registered action
-// whatever its exact format is.
+// REMOVE_CUSTOM_ACTIONS([<threshold>[, '<procedure fqn with argument types>']]); the arguments are positional, and the procedure
+// removes the actions of both spend strategies. The procedure is passed as the (unquoted) PROCEDURE_FQN returned by GET_CUSTOM_ACTIONS.
 var quotaRemoveCustomActionsArgs = g.NewQueryStruct("RemoveCustomActionsArgs").
 	OptionalNumber("Threshold", g.KeywordOptions()).
 	OptionalText("ProcedureFqn", g.KeywordOptions().SingleQuotes()).
@@ -139,20 +147,35 @@ var quotaSetCycleStartActionArgs = g.NewQueryStruct("SetCycleStartActionArgs").
 	List("Arguments", "string", g.ListOptions().Required().MustBrackets().SingleQuotes()).
 	WithValidation(g.ValidIdentifier, "Procedure")
 
+// GET_CONFIG returns one row; numbers and booleans ("0"/"1") are returned as strings.
+var quotaConfigResult = g.StructPair("quotaConfigRow", "QuotaConfig").
+	// uppercase column names used on purpose
+	OptionalText("QUOTA_ID").
+	OptionalNumber("PER_USER_LIMIT").
+	OptionalNumber("PER_USER_LIMIT_WEEKLY").
+	OptionalNumber("PER_USER_LIMIT_DAILY").
+	Bool("BLOCK_ENFORCEMENT_ENABLED").
+	Bool("PER_USER_BLOCK_NOTIFICATIONS_ENABLED").
+	Field("ADMIN_EMAILS", "sql.NullString", "[]string", g.WithCustomParser("ParseQuotaAdminEmails")).
+	OptionalText("ADMIN_LAST_SENT_AT").
+	OptionalText("REFRESH_TIER")
+
 var quotaNotificationThresholdResult = g.StructPair("quotaNotificationThresholdRow", "QuotaNotificationThreshold").
 	// uppercase column names used on purpose
 	Number("THRESHOLD").
 	Enum("SPEND_STRATEGY", QuotaSpendStrategyEnumDef).
 	Bool("NOTIFY_USER").
+	Enum("CYCLE", QuotaCycleEnumDef).
 	Time("ADDED_TIMESTAMP")
 
-// TODO [quota spike]: the guide doesn't document the columns; these mirror the BUDGET class.
+// TODO [quota spike]: no integration could be added to verify the columns; these mirror the BUDGET class.
 var quotaNotificationIntegrationResult = g.StructPair("quotaNotificationIntegrationRow", "QuotaNotificationIntegration").
 	Text("integration_name").
 	OptionalNumber("last_notification_time").
 	OptionalTime("added_date")
 
-// PROCEDURE_FQN is kept as returned (its exact format is not documented); QuotaCustomAction.ProcedureId() parses it.
+// PROCEDURE_FQN is returned unquoted (e.g. DB.SCH.PROC(VARCHAR)); QuotaCustomAction.ProcedureId() parses it.
+// PROCEDURE_ARGS is a JSON array.
 var quotaCustomActionResult = g.StructPair("quotaCustomActionRow", "QuotaCustomAction").
 	// uppercase column names used on purpose
 	Text("ACTION_ID").
@@ -163,16 +186,15 @@ var quotaCustomActionResult = g.StructPair("quotaCustomActionRow", "QuotaCustomA
 	OptionalTime("LAST_TRIGGER_ATTEMPT_TIME").
 	Time("ADDED_TIMESTAMP")
 
-// The columns mirror the BUDGET class. Every column is nullable, so that a row of NULLs (a possible result when no action is set)
-// can be scanned; QuotaCycleStartAction.IsSet() tells the two apart.
-// TODO [quota spike]: verify the result when no cycle-start action is set (no rows vs. a row of NULLs).
+// GET_CYCLE_START_ACTION returns no rows when no action is set. The columns are nullable, so that a row of NULLs can be scanned too;
+// QuotaCycleStartAction.IsSet() tells it apart.
 var quotaCycleStartActionResult = g.StructPair("quotaCycleStartActionRow", "QuotaCycleStartAction").
 	// uppercase column names used on purpose
-	OptionalText("ACTION_UUID").
+	OptionalText("ACTION_ID").
 	OptionalText("PROCEDURE_FQN").
 	Field("PROCEDURE_ARGS", "sql.NullString", "[]string", g.WithCustomParser("ParseQuotaProcedureArguments")).
 	OptionalTime("ADDED_TIMESTAMP").
-	OptionalTime("LAST_TRIGGERED_TIMESTAMP")
+	OptionalTime("LAST_TRIGGER_ATTEMPT_TIME")
 
 var quotasDef = g.NewInterface(
 	"Quotas",
@@ -180,7 +202,6 @@ var quotasDef = g.NewInterface(
 	g.KindOfT[sdkcommons.SchemaObjectIdentifier](),
 ).CreateOperation(
 	quotasDocs,
-	// TODO [quota spike]: the guide only shows CREATE SNOWFLAKE.CORE.QUOTA <name>(); OR REPLACE, IF NOT EXISTS and COMMENT mirror the BUDGET class.
 	g.NewQueryStruct("CreateQuotaOptions").
 		Create().
 		OrReplace().
@@ -191,9 +212,31 @@ var quotasDef = g.NewInterface(
 		OptionalComment().
 		WithValidation(g.ValidIdentifier, "name").
 		WithValidation(g.ConflictingFields, "OrReplace", "IfNotExists"),
+).AlterOperation(
+	quotasDocs,
+	g.NewQueryStruct("AlterQuotaOptions").
+		Alter().
+		SQLWithCustomFieldName("snowflakeCoreQuota", "SNOWFLAKE.CORE.QUOTA").
+		Name().
+		RenameTo().
+		OptionalQueryStructField(
+			"Set",
+			g.NewQueryStruct("QuotaSet").
+				OptionalComment().
+				WithValidation(g.AtLeastOneValueSet, "Comment"),
+			g.KeywordOptions().SQL("SET"),
+		).
+		OptionalQueryStructField(
+			"Unset",
+			g.NewQueryStruct("QuotaUnset").
+				OptionalSQL("COMMENT").
+				WithValidation(g.AtLeastOneValueSet, "Comment"),
+			g.ListOptions().NoParentheses().SQL("UNSET"),
+		).
+		WithValidation(g.ValidIdentifier, "name").
+		WithValidation(g.ExactlyOneValueSet, "RenameTo", "Set", "Unset"),
 ).DropOperation(
 	quotasDocs,
-	// TODO [quota spike]: DROP is not documented for quotas; it mirrors DROP SNOWFLAKE.CORE.BUDGET.
 	g.NewQueryStruct("DropQuotaOptions").
 		Drop().
 		SQLWithCustomFieldName("snowflakeCoreQuota", "SNOWFLAKE.CORE.QUOTA").
@@ -202,7 +245,6 @@ var quotasDef = g.NewInterface(
 		WithValidation(g.ValidIdentifier, "name"),
 ).ShowOperationWithPairedStructs(
 	quotasDocs,
-	// TODO [quota spike]: SHOW is not documented for quotas; the columns and filters mirror SHOW SNOWFLAKE.CORE.BUDGET.
 	g.StructPair("quotaDBRow", "Quota").
 		Time("created_on").
 		Text("name").
@@ -227,7 +269,6 @@ var quotasDef = g.NewInterface(
 	"string",
 ).InstanceMethodOperationScalar(
 	quotasDocs,
-	// TODO [quota spike]: the guide only mentions REMOVE_SHARED_RESOURCE; its arguments mirror ADD_SHARED_RESOURCE and the BUDGET class.
 	"REMOVE_SHARED_RESOURCE",
 	quotaSharedResourceArgs("RemoveSharedResourceArgs"),
 	"string",
@@ -266,12 +307,12 @@ var quotasDef = g.NewInterface(
 	"SET_BLOCK_ENFORCEMENT_ENABLED",
 	quotaSetBlockEnforcementEnabledArgs,
 	"string",
-).InstanceMethodOperationScalar(
+).InstanceMethodOperation(
 	quotasDocs,
-	// TODO [quota spike]: verify that GET_CONFIG returns a single JSON value.
 	"GET_CONFIG",
 	nil,
-	"string",
+	quotaConfigResult,
+	g.InstanceMethodKindSingleValue,
 ).InstanceMethodOperationScalar(
 	quotasDocs,
 	"ADD_NOTIFICATION_THRESHOLD",
@@ -306,7 +347,6 @@ var quotasDef = g.NewInterface(
 	g.InstanceMethodKindSlice,
 ).InstanceMethodOperationScalar(
 	quotasDocs,
-	// TODO [quota spike]: there is no documented getter for admin emails; check GET_CONFIG and how to clear them.
 	"SET_ADMIN_EMAILS",
 	quotaSetAdminEmailsArgs,
 	"string",
@@ -338,7 +378,6 @@ var quotasDef = g.NewInterface(
 	"string",
 ).InstanceMethodOperation(
 	quotasDocs,
-	// TODO [quota spike]: verify the result when no cycle-start action is set (no rows vs. a row of NULLs).
 	"GET_CYCLE_START_ACTION",
 	nil,
 	quotaCycleStartActionResult,
