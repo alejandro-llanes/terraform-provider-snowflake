@@ -22,8 +22,8 @@ type QuotaDetails struct {
 	CycleStartAction         *QuotaCycleStartAction
 }
 
-// QuotaScope is the result of GET_QUOTA_SCOPE, a JSON value. The shape below was verified against a live account; the user tags
-// differ from the guide's example (camelCase keys, no "type").
+// QuotaScope is the result of GET_QUOTA_SCOPE, a JSON value. The user tags differ from the guide's example: their keys are
+// camelCase and they have no "type".
 type QuotaScope struct {
 	ExcludedUsers   []QuotaScopeUser           `json:"excluded_users"`
 	IncludedUsers   []QuotaScopeUser           `json:"included_users"`

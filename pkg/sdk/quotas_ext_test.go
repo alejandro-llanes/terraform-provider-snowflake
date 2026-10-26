@@ -517,17 +517,17 @@ func TestParseQuotaScope(t *testing.T) {
   "excluded_users": [
     {
       "user_id": 22,
-      "user_name": "QUOTA_SPIKE_U2"
+      "user_name": "BOB"
     }
   ],
   "included_users": [
     {
       "user_id": 41,
-      "user_name": "QUOTA_SPIKE_U1"
+      "user_name": "ALICE"
     },
     {
       "user_id": 42,
-      "user_name": "quota_spike_lower_u"
+      "user_name": "carol"
     }
   ],
   "shared_resources": [
@@ -546,7 +546,7 @@ func TestParseQuotaScope(t *testing.T) {
     "operator": "INTERSECTION",
     "tags": [
       {
-        "tagDatabase": "QUOTA_SPIKE_DB",
+        "tagDatabase": "DB",
         "tagId": 11,
         "tagName": "COST_CENTER",
         "tagSchema": "S1",
@@ -560,8 +560,8 @@ func TestParseQuotaScope(t *testing.T) {
 }`)
 		require.NoError(t, err)
 
-		assert.Equal(t, []QuotaScopeUser{{UserId: "22", UserName: "QUOTA_SPIKE_U2"}}, scope.ExcludedUsers)
-		assert.Equal(t, []QuotaScopeUser{{UserId: "41", UserName: "QUOTA_SPIKE_U1"}, {UserId: "42", UserName: "quota_spike_lower_u"}}, scope.IncludedUsers)
+		assert.Equal(t, []QuotaScopeUser{{UserId: "22", UserName: "BOB"}}, scope.ExcludedUsers)
+		assert.Equal(t, []QuotaScopeUser{{UserId: "41", UserName: "ALICE"}, {UserId: "42", UserName: "carol"}}, scope.IncludedUsers)
 
 		require.Len(t, scope.SharedResources, 2)
 		assert.True(t, scope.SharedResources[0].IsWholeDomain())
@@ -574,7 +574,7 @@ func TestParseQuotaScope(t *testing.T) {
 		require.NotNil(t, scope.UserTags)
 		assert.False(t, scope.UserTags.AreExclusions())
 		require.Len(t, scope.UserTags.Tags, 1)
-		assert.Equal(t, NewSchemaObjectIdentifier("QUOTA_SPIKE_DB", "S1", "COST_CENTER"), scope.UserTags.Tags[0].TagId())
+		assert.Equal(t, NewSchemaObjectIdentifier("DB", "S1", "COST_CENTER"), scope.UserTags.Tags[0].TagId())
 		assert.Equal(t, []string{"Analytics", "finance"}, scope.UserTags.Tags[0].TagValues)
 	})
 
@@ -596,7 +596,7 @@ func TestParseQuotaScope(t *testing.T) {
 	})
 
 	t.Run("captured output with excluded tags", func(t *testing.T) {
-		scope, err := ParseQuotaScope(`{"excluded_users": [], "included_users": [], "shared_resources": [], "user_tags": {"operator": "ALL_USERS", "tags": [{"tagDatabase": "QUOTA_SPIKE_DB", "tagId": 11, "tagName": "COST_CENTER", "tagSchema": "S1", "tagValues": ["contractor"]}]}}`)
+		scope, err := ParseQuotaScope(`{"excluded_users": [], "included_users": [], "shared_resources": [], "user_tags": {"operator": "ALL_USERS", "tags": [{"tagDatabase": "DB", "tagId": 11, "tagName": "COST_CENTER", "tagSchema": "S1", "tagValues": ["contractor"]}]}}`)
 		require.NoError(t, err)
 		assert.True(t, scope.UserTags.AreExclusions())
 		assert.Equal(t, []string{"contractor"}, scope.UserTags.Tags[0].TagValues)
