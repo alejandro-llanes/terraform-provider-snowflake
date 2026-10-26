@@ -124,6 +124,26 @@ func Test_quotaConfigurationFromDetails(t *testing.T) {
 	}, remote.notificationThresholds)
 	assert.Nil(t, remote.cycleStartAction)
 
+	t.Run("shared resources of unknown domains are left out", func(t *testing.T) {
+		details := &sdk.QuotaDetails{Scope: sdk.QuotaScope{SharedResources: []sdk.QuotaScopeSharedResource{
+			{Domain: "AI_FUNCTION", Id: "-1", Name: "[ALL-CORTEX AI FUNCTIONS]"},
+			{Domain: "NEW_DOMAIN", Id: "-1", Name: "[ALL]"},
+			{Domain: "NEW_DOMAIN", Id: "3", Name: "INSTANCE"},
+		}}}
+
+		remote, err := quotaConfigurationFromDetails(details, &quotaConfiguration{})
+		require.NoError(t, err)
+
+		assert.Equal(t, []quotaSharedResource{{domain: sdk.QuotaSharedResourceDomainAiFunction}}, remote.sharedResources)
+		assert.Equal(t, []string{"NEW_DOMAIN", "NEW_DOMAIN (INSTANCE)"}, remote.unsupportedSharedResources)
+
+		// the state written from it can be read on the next refresh
+		d := schema.TestResourceDataRaw(t, quotaSchema, map[string]any{"database": "DB", "schema": "SCH", "name": "QUOTA"})
+		require.NoError(t, d.Set("shared_resource", remote.sharedResourcesToSchema()))
+		_, err = quotaConfigurationFromRaw(d.Get)
+		require.NoError(t, err)
+	})
+
 	t.Run("tags with the ALL_USERS operator are the excluded ones", func(t *testing.T) {
 		details := &sdk.QuotaDetails{Scope: sdk.QuotaScope{UserTags: &sdk.QuotaScopeUserTags{
 			Operator: sdk.QuotaScopeUserTagsOperatorAllUsers,

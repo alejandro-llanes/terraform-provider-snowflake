@@ -515,7 +515,20 @@ func ReadQuota(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagn
 		d.Set(ShowOutputAttributeName, []map[string]any{schemas.QuotaToSchema(quota)}),
 		d.Set(DescribeOutputAttributeName, []map[string]any{schemas.QuotaDetailsToSchema(details)}),
 	)
-	return diag.FromErr(errs)
+	if errs != nil {
+		return diag.FromErr(errs)
+	}
+	if len(remote.unsupportedSharedResources) > 0 {
+		return diag.Diagnostics{
+			diag.Diagnostic{
+				Severity: diag.Warning,
+				Summary:  "Quota monitors shared resources this provider version doesn't support",
+				Detail: fmt.Sprintf("Quota %s monitors %s, which can't be managed with this provider version; they're left out of the state and shown in describe_output only.",
+					id.FullyQualifiedName(), strings.Join(remote.unsupportedSharedResources, ", ")),
+			},
+		}
+	}
+	return nil
 }
 
 func UpdateQuota(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {

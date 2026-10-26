@@ -27,6 +27,10 @@ type quotaConfiguration struct {
 	adminEmails              []string
 	customActions            []quotaCustomAction
 	cycleStartAction         *quotaCycleStartAction
+
+	// unsupportedSharedResources are the shared resources read from Snowflake whose domain this provider version doesn't
+	// know. They can't be configured, so they're left out of the state instead of making every later plan fail.
+	unsupportedSharedResources []string
 }
 
 type quotaSharedResource struct {
@@ -281,7 +285,16 @@ func quotaConfigurationFromDetails(details *sdk.QuotaDetails, current *quotaConf
 	}
 
 	for _, resource := range details.Scope.SharedResources {
-		sharedResource := quotaSharedResource{domain: normalizeQuotaDomain(resource)}
+		domain, err := resource.NormalizedDomain()
+		if err != nil {
+			unsupported := resource.Domain
+			if !resource.IsWholeDomain() {
+				unsupported = fmt.Sprintf("%s (%s)", resource.Domain, resource.Name)
+			}
+			remote.unsupportedSharedResources = append(remote.unsupportedSharedResources, unsupported)
+			continue
+		}
+		sharedResource := quotaSharedResource{domain: domain}
 		switch {
 		case resource.IsWholeDomain():
 		case resource.CortexAgentId != nil:
@@ -384,14 +397,6 @@ func quotaConfigurationFromDetails(details *sdk.QuotaDetails, current *quotaConf
 	}
 
 	return remote, nil
-}
-
-// normalizeQuotaDomain maps a domain returned by Snowflake to the provider's spelling, keeping unknown domains as they are.
-func normalizeQuotaDomain(resource sdk.QuotaScopeSharedResource) sdk.QuotaSharedResourceDomain {
-	if normalized, err := resource.NormalizedDomain(); err == nil {
-		return normalized
-	}
-	return sdk.QuotaSharedResourceDomain(resource.Domain)
 }
 
 // quotaRegisteredProcedureFqn finds the PROCEDURE_FQN Snowflake returns for the given configured action, so that it can be
