@@ -201,9 +201,9 @@ Read-Only:
 
 Read-Only:
 
-- `added_date` (String)
+- `added_timestamp` (String)
 - `integration_name` (String)
-- `last_notification_time` (Number)
+- `last_notification_time` (String)
 
 
 <a id="nestedobjatt--quotas--describe_output--notification_thresholds"></a>

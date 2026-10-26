@@ -13,7 +13,7 @@ description: |-
 
 ~> **Note** Users are selected either by tags (`user_tags`) or by excluding tags (`excluded_user_tag`), not both. Snowflake clears the included and excluded users when tags are excluded, so the provider sets them again after changing `excluded_user_tag`.
 
--> **Note** The role managing the quota needs the `SNOWFLAKE.QUOTA_CREATOR` database role and the `CREATE SNOWFLAKE.CORE.QUOTA` privilege on the schema. Tags used in `user_tags` and `excluded_user_tag` require the `APPLYBUDGET` privilege. Notification integrations and the procedures used in `custom_action` and `cycle_start_action` must be granted to the `SNOWFLAKE` application, and `admin_emails` (as well as the recipients of email notification integrations) must be verified emails of users in the account. Check the [per-user quotas documentation](https://docs.snowflake.com/en/user-guide/budgets/per-user-quotas) for details.
+-> **Note** The role managing the quota needs the `SNOWFLAKE.QUOTA_CREATOR` database role and the `CREATE SNOWFLAKE.CORE.QUOTA` privilege on the schema. Tags used in `user_tags` and `excluded_user_tag` require the `APPLYBUDGET` privilege. Notification integrations must be webhook or queue integrations (email integrations aren't accepted; email recipients are set with `admin_emails`). USAGE on the notification integrations and on the procedures used in `custom_action` and `cycle_start_action` must be granted to the `SNOWFLAKE` application, and `admin_emails` must be verified emails of users in the account. Check the [per-user quotas documentation](https://docs.snowflake.com/en/user-guide/budgets/per-user-quotas) for details.
 
 # snowflake_quota (Resource)
 
@@ -77,8 +77,9 @@ resource "snowflake_quota" "ai" {
     notify_user    = false
   }
 
-  # The integration and the admin emails must use verified emails of users in the account.
-  notification_integrations = [snowflake_email_notification_integration.example.name]
+  # Webhook or queue integrations with USAGE granted to the SNOWFLAKE application; admin emails must be verified emails of
+  # users in the account.
+  notification_integrations = [snowflake_notification_integration.example.name]
   admin_emails              = ["admin@example.com"]
 }
 
@@ -151,7 +152,7 @@ resource "snowflake_quota" "warehouse" {
 - `excluded_user_tag` (Block Set) Applies the quota to all users except the ones with the given tag and value. Conflicts with `user_tags`. (see [below for nested schema](#nestedblock--excluded_user_tag))
 - `excluded_users` (Set of String) Names of individual users excluded from the quota. Names are resolved case-insensitively. For more information about this resource, see [docs](./user).
 - `included_users` (Set of String) Names of individual users the quota applies to. Names are resolved case-insensitively. For more information about this resource, see [docs](./user).
-- `notification_integrations` (Set of String) Notification integrations used to send admin summary notifications. USAGE on each integration must be granted to the SNOWFLAKE application. For more information about this resource, see [docs](./email_notification_integration).
+- `notification_integrations` (Set of String) Webhook or queue notification integrations used to send admin summaries; email integrations aren't accepted (use `admin_emails` for email recipients). USAGE on each integration must be granted to the SNOWFLAKE application. For more information about this resource, see [docs](./notification_integration).
 - `notification_threshold` (Block Set) Thresholds (percentages of the limit) at which notifications are sent. (see [below for nested schema](#nestedblock--notification_threshold))
 - `notify_blocked_users` (Boolean) (Default: `true`) Sends an email to users when they are blocked. Used only when `block_enforcement_enabled` is true.
 - `per_user_limit_daily` (Number) (Default: fallback to Snowflake default - uses special value that cannot be set in the configuration manually (`-1`)) Credit limit (a whole number of credits) applied to each user in scope for every daily cycle (UTC-aligned). If not set, the limit is unset.
@@ -318,9 +319,9 @@ Read-Only:
 
 Read-Only:
 
-- `added_date` (String)
+- `added_timestamp` (String)
 - `integration_name` (String)
-- `last_notification_time` (Number)
+- `last_notification_time` (String)
 
 
 <a id="nestedobjatt--describe_output--notification_thresholds"></a>

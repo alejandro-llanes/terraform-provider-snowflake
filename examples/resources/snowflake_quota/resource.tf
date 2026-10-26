@@ -53,8 +53,9 @@ resource "snowflake_quota" "ai" {
     notify_user    = false
   }
 
-  # The integration and the admin emails must use verified emails of users in the account.
-  notification_integrations = [snowflake_email_notification_integration.example.name]
+  # Webhook or queue integrations with USAGE granted to the SNOWFLAKE application; admin emails must be verified emails of
+  # users in the account.
+  notification_integrations = [snowflake_notification_integration.example.name]
   admin_emails              = ["admin@example.com"]
 }
 
