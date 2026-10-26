@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Snowflake-Labs/terraform-provider-snowflake/pkg/acceptance/bettertestspoc/assert/objectassert"
 	"github.com/Snowflake-Labs/terraform-provider-snowflake/pkg/acceptance/helpers"
 	"github.com/Snowflake-Labs/terraform-provider-snowflake/pkg/sdk"
 	"github.com/stretchr/testify/assert"
@@ -63,14 +64,13 @@ func TestInt_Quotas(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(testClientHelper().Quota.DropFunc(t, id))
 
-		quota, err := client.Quotas.ShowByID(ctx, id)
-		require.NoError(t, err)
-		assert.Equal(t, id.Name(), quota.Name)
-		assert.Equal(t, id.DatabaseName(), quota.DatabaseName)
-		assert.Equal(t, id.SchemaName(), quota.SchemaName)
-		assert.Equal(t, "quota comment", *quota.Comment)
-		assert.NotEmpty(t, quota.Owner)
-		assert.NotEmpty(t, quota.CreatedOn)
+		assertThatObject(t, objectassert.Quota(t, id).
+			HasName(id.Name()).
+			HasDatabaseName(id.DatabaseName()).
+			HasSchemaName(id.SchemaName()).
+			HasComment("quota comment").
+			HasOwnerNotEmpty().
+			HasCreatedOnNotEmpty())
 
 		err = client.Quotas.Drop(ctx, sdk.NewDropQuotaRequest(id))
 		require.NoError(t, err)
@@ -92,23 +92,20 @@ func TestInt_Quotas(t *testing.T) {
 
 		err := client.Quotas.Alter(ctx, sdk.NewAlterQuotaRequest(quotaId).WithSet(*sdk.NewQuotaSetRequest().WithComment("changed")))
 		require.NoError(t, err)
-		quota, err := client.Quotas.ShowByID(ctx, quotaId)
-		require.NoError(t, err)
-		assert.Equal(t, "changed", *quota.Comment)
+		assertThatObject(t, objectassert.Quota(t, quotaId).HasComment("changed"))
 
 		err = client.Quotas.Alter(ctx, sdk.NewAlterQuotaRequest(quotaId).WithUnset(*sdk.NewQuotaUnsetRequest().WithComment(true)))
 		require.NoError(t, err)
-		quota, err = client.Quotas.ShowByID(ctx, quotaId)
-		require.NoError(t, err)
-		assert.Nil(t, quota.Comment)
+		assertThatObject(t, objectassert.Quota(t, quotaId).HasNoComment())
 
 		err = client.Quotas.Alter(ctx, sdk.NewAlterQuotaRequest(quotaId).WithRenameTo(newId))
 		require.NoError(t, err)
 		_, err = client.Quotas.ShowByID(ctx, quotaId)
 		require.ErrorIs(t, err, sdk.ErrObjectNotFound)
-		quota, err = client.Quotas.ShowByID(ctx, newId)
-		require.NoError(t, err)
-		assert.Equal(t, newId, quota.ID())
+		assertThatObject(t, objectassert.Quota(t, newId).
+			HasName(newId.Name()).
+			HasDatabaseName(newId.DatabaseName()).
+			HasSchemaName(newId.SchemaName()))
 	})
 
 	t.Run("show with like and in", func(t *testing.T) {
@@ -122,7 +119,10 @@ func TestInt_Quotas(t *testing.T) {
 			WithIn(sdk.In{Schema: quotaId.SchemaId()}))
 		require.NoError(t, err)
 		require.Len(t, quotas, 1)
-		assert.Equal(t, quotaId, quotas[0].ID())
+		assertThatObject(t, objectassert.QuotaFromObject(t, &quotas[0]).
+			HasName(quotaId.Name()).
+			HasDatabaseName(quotaId.DatabaseName()).
+			HasSchemaName(quotaId.SchemaName()))
 
 		quotas, err = client.Quotas.Show(ctx, sdk.NewShowQuotaRequest().WithIn(sdk.In{Schema: quotaId.SchemaId()}))
 		require.NoError(t, err)
