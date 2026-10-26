@@ -114,7 +114,8 @@ var quotaRemoveNotificationThresholdArgs = g.NewQueryStruct("RemoveNotificationT
 	Enum("SpendStrategy", QuotaSpendStrategyEnumDef, g.KeywordOptions().SingleQuotes().Required()).
 	OptionalEnum("Cycle", QuotaCycleEnumDef, g.KeywordOptions().SingleQuotes())
 
-// TODO [quota spike]: an email integration without verified recipients is rejected, so adding an integration couldn't be verified.
+// Only webhook and queue integrations are accepted (email recipients are set with SET_ADMIN_EMAILS), and USAGE on the integration
+// must be granted to the SNOWFLAKE application; otherwise ADD_NOTIFICATION_INTEGRATION fails with INVALID_INTEGRATION.
 func quotaNotificationIntegrationArgs(name string) *g.QueryStruct {
 	return g.NewQueryStruct(name).
 		Identifier("Integration", g.KindOfT[sdkcommons.AccountObjectIdentifier](), g.IdentifierOptions().SingleQuotes().Required()).
@@ -168,11 +169,12 @@ var quotaNotificationThresholdResult = g.StructPair("quotaNotificationThresholdR
 	Enum("CYCLE", QuotaCycleEnumDef).
 	Time("ADDED_TIMESTAMP")
 
-// TODO [quota spike]: no integration could be added to verify the columns; these mirror the BUDGET class.
+// LAST_NOTIFICATION_TIME is NULL until a notification is sent; it's read as text, so it scans whatever its type is.
 var quotaNotificationIntegrationResult = g.StructPair("quotaNotificationIntegrationRow", "QuotaNotificationIntegration").
-	Text("integration_name").
-	OptionalNumber("last_notification_time").
-	OptionalTime("added_date")
+	// uppercase column names used on purpose
+	Text("INTEGRATION_NAME").
+	OptionalText("LAST_NOTIFICATION_TIME").
+	Time("ADDED_TIMESTAMP")
 
 // PROCEDURE_FQN is returned unquoted (e.g. DB.SCH.PROC(VARCHAR)); QuotaCustomAction.ProcedureId() parses it.
 // PROCEDURE_ARGS is a JSON array.

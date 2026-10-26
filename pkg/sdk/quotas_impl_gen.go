@@ -468,9 +468,9 @@ func (r *GetNotificationIntegrationsQuotaRequest) toOpts() *GetNotificationInteg
 func (r quotaNotificationIntegrationRow) convert() (*QuotaNotificationIntegration, error) {
 	result := &QuotaNotificationIntegration{
 		IntegrationName: r.IntegrationName,
+		AddedTimestamp:  r.AddedTimestamp,
 	}
-	mapNullInt(&result.LastNotificationTime, r.LastNotificationTime)
-	mapNullTime(&result.AddedDate, r.AddedDate)
+	mapNullString(&result.LastNotificationTime, r.LastNotificationTime)
 	return result, nil
 }
 

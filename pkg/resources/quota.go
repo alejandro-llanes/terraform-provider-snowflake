@@ -233,7 +233,7 @@ var quotaSchema = map[string]*schema.Schema{
 			ValidateDiagFunc: IsValidIdentifier[sdk.AccountObjectIdentifier](),
 			DiffSuppressFunc: suppressIdentifierQuoting,
 		},
-		Description: relatedResourceDescription("Notification integrations used to send admin summary notifications. USAGE on each integration must be granted to the SNOWFLAKE application.", resources.EmailNotificationIntegration),
+		Description: relatedResourceDescription("Webhook or queue notification integrations used to send admin summaries; email integrations aren't accepted (use `admin_emails` for email recipients). USAGE on each integration must be granted to the SNOWFLAKE application.", resources.NotificationIntegration),
 	},
 	"admin_emails": {
 		Type:        schema.TypeSet,
@@ -713,7 +713,6 @@ func reconcileQuota(ctx context.Context, client *sdk.Client, id sdk.SchemaObject
 			continue
 		}
 		if desiredLimit == IntDefault {
-			// TODO [quota spike]: the guide only shows UNSET_PER_USER_LIMIT('WEEKLY'); verify the monthly cycle.
 			args := sdk.NewQuotaUnsetPerUserLimitArgsRequest(cycle)
 			if _, err := quotas.UnsetPerUserLimit(ctx, sdk.NewUnsetPerUserLimitQuotaRequest(id, *args)); err != nil {
 				return fmt.Errorf("unsetting the %s per-user limit: %w", cycle, err)
@@ -736,7 +735,7 @@ func reconcileQuota(ctx context.Context, client *sdk.Client, id sdk.SchemaObject
 		}
 	}
 	if !quotaKeysEqual(previous.adminEmails, desired.adminEmails, quotaEmailKey) {
-		// TODO [quota spike]: verify that an empty string clears the admin emails.
+		// an empty string clears the admin emails
 		args := sdk.NewQuotaSetAdminEmailsArgsRequestFromEmails(desired.adminEmails...)
 		if _, err := quotas.SetAdminEmails(ctx, sdk.NewSetAdminEmailsQuotaRequest(id, *args)); err != nil {
 			return fmt.Errorf("setting admin emails: %w", err)
