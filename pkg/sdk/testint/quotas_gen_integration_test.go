@@ -13,7 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TODO [quota spike]: these tests follow the per-user quotas guide and have not been run against a live account yet.
+// quotaWebhookUrl is never called: admin summaries are sent only when users cross their limits.
+const quotaWebhookUrl = "https://hooks.slack.com/services/T00000000/B00000000/AAAAAAAAAAAAAAAAAAAAAAAA"
+
 func TestInt_Quotas(t *testing.T) {
 	client := testClient(t)
 	ctx := testContext(t)
@@ -379,12 +381,12 @@ func TestInt_Quotas(t *testing.T) {
 		assert.Equal(t, sdk.QuotaCycleWeekly, thresholds[0].Cycle)
 	})
 
-	// Snowflake accepts only email integrations with verified recipients and verified admin emails; helpers.VerifiedEmail is verified
-	// in the accounts the tests run in.
+	// Quotas accept webhook and queue integrations (not email ones), and verified admin emails only; helpers.VerifiedEmail is
+	// verified in the accounts the tests run in.
 	t.Run("notification integrations and admin emails", func(t *testing.T) {
 		quotaId, quotaCleanup := testClientHelper().Quota.Create(t)
 		t.Cleanup(quotaCleanup)
-		integration, integrationCleanup := testClientHelper().NotificationIntegration.Create(t)
+		integration, integrationCleanup := testClientHelper().NotificationIntegration.CreateWebhook(t, quotaWebhookUrl)
 		t.Cleanup(integrationCleanup)
 		t.Cleanup(testClientHelper().Grant.GrantUsageOnIntegrationToSnowflakeApplication(t, integration.ID()))
 
@@ -398,12 +400,22 @@ func TestInt_Quotas(t *testing.T) {
 		require.Len(t, integrations, 1)
 		assert.Equal(t, integration.ID().Name(), integrations[0].IntegrationName)
 
+		config, err := client.Quotas.GetConfig(ctx, sdk.NewGetConfigQuotaRequest(quotaId))
+		require.NoError(t, err)
+		assert.Equal(t, []string{helpers.VerifiedEmail}, config.AdminEmails)
+
 		_, err = client.Quotas.RemoveNotificationIntegration(ctx, sdk.NewRemoveNotificationIntegrationQuotaRequest(quotaId, *sdk.NewQuotaRemoveNotificationIntegrationArgsRequest(integration.ID())))
+		require.NoError(t, err)
+		// an empty list clears the admin emails
+		_, err = client.Quotas.SetAdminEmails(ctx, sdk.NewSetAdminEmailsQuotaRequest(quotaId, *sdk.NewQuotaSetAdminEmailsArgsRequestFromEmails()))
 		require.NoError(t, err)
 
 		integrations, err = client.Quotas.GetNotificationIntegrations(ctx, sdk.NewGetNotificationIntegrationsQuotaRequest(quotaId))
 		require.NoError(t, err)
 		assert.Empty(t, integrations)
+		config, err = client.Quotas.GetConfig(ctx, sdk.NewGetConfigQuotaRequest(quotaId))
+		require.NoError(t, err)
+		assert.Empty(t, config.AdminEmails)
 	})
 
 	t.Run("custom actions", func(t *testing.T) {

@@ -360,10 +360,11 @@ func TestAcc_Quota_ExcludedUserTags(t *testing.T) {
 	))
 }
 
-// Snowflake only accepts email integrations with verified recipients and verified admin emails; helpers.VerifiedEmail is verified
+// Quotas accept webhook and queue integrations (not email ones), and verified admin emails only; helpers.VerifiedEmail is verified
 // in the accounts the tests run in.
 func TestAcc_Quota_AdminNotifications(t *testing.T) {
-	integration, integrationCleanup := testClient().NotificationIntegration.Create(t)
+	// the webhook is never called: admin summaries are sent only when users cross their limits
+	integration, integrationCleanup := testClient().NotificationIntegration.CreateWebhook(t, "https://hooks.slack.com/services/T00000000/B00000000/AAAAAAAAAAAAAAAAAAAAAAAA")
 	t.Cleanup(integrationCleanup)
 	t.Cleanup(testClient().Grant.GrantUsageOnIntegrationToSnowflakeApplication(t, integration.ID()))
 
