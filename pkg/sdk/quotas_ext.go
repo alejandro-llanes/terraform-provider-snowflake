@@ -98,17 +98,12 @@ func (c QuotaConfig) PerUserLimitFor(cycle QuotaCycle) (*int, error) {
 	}
 }
 
-// ParseQuotaAdminEmails parses the ADMIN_EMAILS column of GET_CONFIG.
-// TODO [quota spike]: SET_ADMIN_EMAILS only accepts verified emails, so the column couldn't be verified with a value set;
-// the comma-separated form (as passed to SET_ADMIN_EMAILS) and a JSON array are both accepted.
+// ParseQuotaAdminEmails parses the ADMIN_EMAILS column of GET_CONFIG: the emails separated by commas without spaces (NULL when
+// cleared).
 func ParseQuotaAdminEmails(value string) ([]string, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
 		return []string{}, nil
-	}
-	var emails []string
-	if err := json.Unmarshal([]byte(trimmed), &emails); err == nil {
-		return emails, nil
 	}
 	return ParseCommaSeparatedStringArray(trimmed, true), nil
 }

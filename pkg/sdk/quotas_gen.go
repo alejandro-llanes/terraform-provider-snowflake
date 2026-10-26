@@ -364,15 +364,15 @@ type GetNotificationIntegrationsQuotaOptions struct {
 }
 
 type quotaNotificationIntegrationRow struct {
-	IntegrationName      string        `db:"integration_name"`
-	LastNotificationTime sql.NullInt64 `db:"last_notification_time"`
-	AddedDate            sql.NullTime  `db:"added_date"`
+	IntegrationName      string         `db:"INTEGRATION_NAME"`
+	LastNotificationTime sql.NullString `db:"LAST_NOTIFICATION_TIME"`
+	AddedTimestamp       time.Time      `db:"ADDED_TIMESTAMP"`
 }
 
 type QuotaNotificationIntegration struct {
 	IntegrationName      string
-	LastNotificationTime *int
-	AddedDate            *time.Time
+	LastNotificationTime *string
+	AddedTimestamp       time.Time
 }
 
 type quotaGetNotificationIntegrationsArgs struct{}

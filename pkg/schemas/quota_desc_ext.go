@@ -52,8 +52,8 @@ func (quotaDetailsToSchemaMapper) additionalSchema() map[string]*schema.Schema {
 		}),
 		"notification_integrations": quotaComputedNestedList(map[string]*schema.Schema{
 			"integration_name":       quotaComputedValue(schema.TypeString),
-			"last_notification_time": quotaComputedValue(schema.TypeInt),
-			"added_date":             quotaComputedValue(schema.TypeString),
+			"last_notification_time": quotaComputedValue(schema.TypeString),
+			"added_timestamp":        quotaComputedValue(schema.TypeString),
 		}),
 		"custom_actions": quotaComputedNestedList(map[string]*schema.Schema{
 			"action_id":                 quotaComputedValue(schema.TypeString),
@@ -92,12 +92,12 @@ func (quotaDetailsToSchemaMapper) additionalToSchema(src *sdk.QuotaDetails, dst 
 
 	integrations := make([]map[string]any, len(src.NotificationIntegrations))
 	for i, integration := range src.NotificationIntegrations {
-		integrationSchema := map[string]any{"integration_name": integration.IntegrationName}
+		integrationSchema := map[string]any{
+			"integration_name": integration.IntegrationName,
+			"added_timestamp":  integration.AddedTimestamp.String(),
+		}
 		if integration.LastNotificationTime != nil {
 			integrationSchema["last_notification_time"] = *integration.LastNotificationTime
-		}
-		if integration.AddedDate != nil {
-			integrationSchema["added_date"] = integration.AddedDate.String()
 		}
 		integrations[i] = integrationSchema
 	}

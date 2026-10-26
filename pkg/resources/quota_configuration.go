@@ -412,7 +412,7 @@ func quotaRegisteredProcedureFqn(registered []sdk.QuotaCustomAction, action quot
 // matchCurrentQuotaSharedResource keeps the configured spelling of an equivalent shared resource. GET_QUOTA_SCOPE may return an
 // instance by its bare name (e.g. an agent without its database and schema), so a unique bare-name match in the same domain is
 // accepted too.
-// TODO [quota spike]: verify the "name" returned for each domain.
+// TODO [quota spike]: verify the "name" returned for SNOWFLAKE INTELLIGENCE and AI GATEWAY instances.
 func matchCurrentQuotaSharedResource(current []quotaSharedResource, remote quotaSharedResource) quotaSharedResource {
 	if idx := slices.IndexFunc(current, func(c quotaSharedResource) bool { return c.key() == remote.key() }); idx >= 0 {
 		return current[idx]

@@ -631,8 +631,9 @@ func TestParseQuotaAdminEmails(t *testing.T) {
 	}{
 		{input: "", expected: []string{}},
 		{input: "admin1@example.com", expected: []string{"admin1@example.com"}},
+		// as returned by GET_CONFIG
+		{input: "admin1@example.com,admin2@example.com", expected: []string{"admin1@example.com", "admin2@example.com"}},
 		{input: "admin1@example.com, admin2@example.com", expected: []string{"admin1@example.com", "admin2@example.com"}},
-		{input: `["admin1@example.com", "admin2@example.com"]`, expected: []string{"admin1@example.com", "admin2@example.com"}},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.input, func(t *testing.T) {
