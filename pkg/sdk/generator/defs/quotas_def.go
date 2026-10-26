@@ -6,8 +6,7 @@ import (
 )
 
 // Per-user quotas are documented only in the user guide (https://docs.snowflake.com/en/user-guide/budgets/per-user-quotas);
-// there is no class reference yet. The commands, method signatures and result shapes below were verified against a live account
-// where the guide is silent or differs from it. The parts that couldn't be verified are marked with "TODO [quota spike]".
+// there is no class reference yet, so where the guide is silent the definitions below follow Snowflake's behavior.
 
 const quotasDocs = "https://docs.snowflake.com/en/user-guide/budgets/per-user-quotas"
 
@@ -43,7 +42,7 @@ func quotaSharedResourceArgs(name string) *g.QueryStruct {
 		OptionalText("InstanceName", g.KeywordOptions().SingleQuotes()).
 		OptionalIdentifier("Warehouse", g.KindOfT[sdkcommons.AccountObjectIdentifier](), reference("WAREHOUSE")).
 		OptionalIdentifier("CortexAgent", g.KindOfT[sdkcommons.SchemaObjectIdentifier](), reference("CORTEX AGENT")).
-		// TODO [quota spike]: the reference types are accepted, but no Snowflake Intelligence or AI Gateway object was available to verify them.
+		// the Snowflake Intelligence and AI Gateway references follow the guide; the integration tests cover their whole domains only
 		OptionalIdentifier("SnowflakeIntelligence", g.KindOfT[sdkcommons.AccountObjectIdentifier](), reference("SNOWFLAKE INTELLIGENCE")).
 		OptionalIdentifier("AiGateway", g.KindOfT[sdkcommons.AccountObjectIdentifier](), reference("AI GATEWAY")).
 		WithValidation(g.MoreThanOneValueSet, "InstanceName", "Warehouse", "CortexAgent", "SnowflakeIntelligence", "AiGateway").

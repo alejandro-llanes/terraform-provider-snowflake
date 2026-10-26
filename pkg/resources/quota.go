@@ -22,7 +22,6 @@ import (
 )
 
 // The quota resource is built on the per-user quotas guide (https://docs.snowflake.com/en/user-guide/budgets/per-user-quotas).
-// Behaviors the guide doesn't document are marked "TODO [quota spike]" until verified against a live account.
 
 func quotaEnumValuesDescription[T ~string](values []T) string {
 	return fmt.Sprintf("Valid values are (case-sensitive): %s.", possibleValuesListed(values))

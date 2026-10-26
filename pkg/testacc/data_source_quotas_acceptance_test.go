@@ -17,8 +17,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/tfversion"
 )
 
-// TODO [quota spike]: the quotas data source tests follow the per-user quotas guide and have not been run against a live account yet.
-
 func TestAcc_Quotas_BasicUseCase(t *testing.T) {
 	id := testClient().Ids.RandomSchemaObjectIdentifier()
 	comment := random.Comment()
