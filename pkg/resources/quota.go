@@ -14,6 +14,7 @@ import (
 	"github.com/Snowflake-Labs/terraform-provider-snowflake/pkg/provider/resources"
 	"github.com/Snowflake-Labs/terraform-provider-snowflake/pkg/schemas"
 	"github.com/Snowflake-Labs/terraform-provider-snowflake/pkg/sdk"
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -369,6 +370,7 @@ func validateQuotaDomains(_ context.Context, d *schema.ResourceDiff, _ any) erro
 	var monitorsWarehouses, monitorsAi bool
 	wholeDomains := make(map[sdk.QuotaSharedResourceDomain]bool)
 	domainsWithInstances := make(map[sdk.QuotaSharedResourceDomain]bool)
+	unknownInstances := quotaUnknownInstancesByDomain(d.GetRawConfig())
 	for _, raw := range d.Get("shared_resource").(*schema.Set).List() {
 		resource := raw.(map[string]any)
 		if resource["domain"].(string) == "" {
@@ -380,13 +382,20 @@ func validateQuotaDomains(_ context.Context, d *schema.ResourceDiff, _ any) erro
 			errs = append(errs, err)
 			continue
 		}
+		switch {
+		case resource["instance"].(string) == "" && unknownInstances[domain] > 0:
+			// an unknown instance (e.g. a reference to an object created in the same apply) reads as an empty string too.
+			// It's an instance, not the whole domain; it's validated when the plan is made again with the known values at apply
+			// time, which also catches the whole domain listed next to it (both read the same until then).
+			unknownInstances[domain]--
+			domainsWithInstances[domain] = true
+		case resource["instance"].(string) == "":
+			wholeDomains[domain] = true
+		default:
+			domainsWithInstances[domain] = true
+		}
 		if _, err := sdk.NewQuotaAddSharedResourceArgsRequestFromInstance(domain, resource["instance"].(string)); err != nil {
 			errs = append(errs, fmt.Errorf("invalid instance %q of the %s domain: %w", resource["instance"], domain, err))
-		}
-		if resource["instance"].(string) == "" {
-			wholeDomains[domain] = true
-		} else {
-			domainsWithInstances[domain] = true
 		}
 		if domain == sdk.QuotaSharedResourceDomainWarehouse {
 			monitorsWarehouses = true
@@ -406,6 +415,29 @@ func validateQuotaDomains(_ context.Context, d *schema.ResourceDiff, _ any) erro
 		errs = append(errs, errors.New("block_enforcement_enabled applies only to the AI domains and can't be used with the WAREHOUSE domain"))
 	}
 	return errors.Join(errs...)
+}
+
+// quotaUnknownInstancesByDomain counts, per domain, the shared resources whose instance isn't known yet in the raw configuration.
+func quotaUnknownInstancesByDomain(rawConfig cty.Value) map[sdk.QuotaSharedResourceDomain]int {
+	counts := make(map[sdk.QuotaSharedResourceDomain]int)
+	if rawConfig.IsNull() || !rawConfig.IsKnown() || !rawConfig.Type().IsObjectType() || !rawConfig.Type().HasAttribute("shared_resource") {
+		return counts
+	}
+	sharedResources := rawConfig.GetAttr("shared_resource")
+	if sharedResources.IsNull() || !sharedResources.IsKnown() {
+		return counts
+	}
+	for it := sharedResources.ElementIterator(); it.Next(); {
+		_, resource := it.Element()
+		if !resource.IsKnown() || resource.IsNull() {
+			continue
+		}
+		domain, instance := resource.GetAttr("domain"), resource.GetAttr("instance")
+		if domain.IsKnown() && !domain.IsNull() && !instance.IsKnown() {
+			counts[sdk.QuotaSharedResourceDomain(domain.AsString())]++
+		}
+	}
+	return counts
 }
 
 // validateQuotaNotificationThresholds rejects thresholds Snowflake can't tell apart: it keeps one per (threshold, spend strategy, cycle).

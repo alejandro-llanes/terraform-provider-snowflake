@@ -6,6 +6,7 @@ import (
 
 	"github.com/Snowflake-Labs/terraform-provider-snowflake/pkg/internal/provider"
 	"github.com/Snowflake-Labs/terraform-provider-snowflake/pkg/sdk"
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 	"github.com/stretchr/testify/assert"
@@ -237,13 +238,18 @@ func Test_reconcileQuota(t *testing.T) {
 }
 
 func Test_Quota_CustomizeDiff(t *testing.T) {
-	planConfig := func(t *testing.T, config map[string]any) error {
+	// rawConfig is what Terraform sends with the plan; the legacy config holds the same values, with unknowns shimmed
+	planConfigWithRaw := func(t *testing.T, config map[string]any, rawConfig cty.Value) error {
 		t.Helper()
 		config["database"] = "DB"
 		config["schema"] = "SCH"
 		config["name"] = "QUOTA"
-		_, err := Quota().Diff(context.Background(), &terraform.InstanceState{}, &terraform.ResourceConfig{Config: config}, &provider.Context{Client: &sdk.Client{}})
+		_, err := Quota().Diff(context.Background(), &terraform.InstanceState{RawConfig: rawConfig}, &terraform.ResourceConfig{Config: config}, &provider.Context{Client: &sdk.Client{}})
 		return err
+	}
+	planConfig := func(t *testing.T, config map[string]any) error {
+		t.Helper()
+		return planConfigWithRaw(t, config, cty.NilVal)
 	}
 	sharedResource := func(domain string, instance string) map[string]any {
 		return map[string]any{"domain": domain, "instance": instance}
@@ -275,6 +281,24 @@ func Test_Quota_CustomizeDiff(t *testing.T) {
 	t.Run("a domain can't be monitored both as a whole and by its instances", func(t *testing.T) {
 		err := planConfig(t, map[string]any{"shared_resource": []any{sharedResource("AI FUNCTION", ""), sharedResource("AI FUNCTION", "AI_CLASSIFY")}})
 		require.ErrorContains(t, err, "the AI FUNCTION domain is monitored as a whole")
+	})
+
+	// e.g. a reference to an agent created in the same apply
+	t.Run("an instance not known yet isn't taken for the whole domain", func(t *testing.T) {
+		// hcl2shim.UnknownVariableValue, which the SDK doesn't export
+		const unknown = "74D93920-ED26-11E3-AC10-0800200C9A66"
+		rawSharedResource := func(domain string, instance cty.Value) cty.Value {
+			return cty.ObjectVal(map[string]cty.Value{"domain": cty.StringVal(domain), "instance": instance})
+		}
+
+		err := planConfigWithRaw(t,
+			map[string]any{"shared_resource": []any{sharedResource("CORTEX AGENT", unknown), sharedResource("CORTEX AGENT", "DB.SCH.AGENT")}},
+			cty.ObjectVal(map[string]cty.Value{"shared_resource": cty.SetVal([]cty.Value{
+				rawSharedResource("CORTEX AGENT", cty.UnknownVal(cty.String)),
+				rawSharedResource("CORTEX AGENT", cty.StringVal("DB.SCH.AGENT")),
+			})}),
+		)
+		require.NoError(t, err)
 	})
 
 	t.Run("included and excluded tags conflict", func(t *testing.T) {
