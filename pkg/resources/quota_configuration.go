@@ -276,7 +276,7 @@ func quotaTagValuesFromRaw(set *schema.Set) ([]quotaTagValue, error) {
 }
 
 // quotaConfigurationFromDetails converts the quota's GET_* results into its declarative configuration.
-// Values equivalent to the current configuration keep its spelling; values that can't be read back are taken from it.
+// Values equivalent to the current configuration keep its spelling.
 func quotaConfigurationFromDetails(details *sdk.QuotaDetails, current *quotaConfiguration) (*quotaConfiguration, error) {
 	remote := &quotaConfiguration{
 		perUserLimits:           make(map[sdk.QuotaCycle]int),

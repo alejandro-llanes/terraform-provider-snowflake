@@ -509,7 +509,7 @@ func ReadQuota(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagn
 	}
 
 	// The configuration currently in the state is used to keep the user's spelling of equivalent values
-	// (e.g. quoted vs. unquoted identifiers) and to fill in the values that can't be read back.
+	// (e.g. quoted vs. unquoted identifiers).
 	current, err := quotaConfigurationFromRaw(d.Get)
 	if err != nil {
 		return diag.FromErr(err)
@@ -536,7 +536,6 @@ func ReadQuota(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagn
 		d.Set("per_user_limit_weekly", remote.perUserLimit(sdk.QuotaCycleWeekly)),
 		d.Set("per_user_limit_daily", remote.perUserLimit(sdk.QuotaCycleDaily)),
 		d.Set("block_enforcement_enabled", remote.blockEnforcementEnabled),
-		// not readable from Snowflake: kept from the configuration, and set to their defaults on import
 		d.Set("notify_blocked_users", remote.notifyBlockedUsers),
 		d.Set("admin_emails", remote.adminEmails),
 		d.Set("notification_threshold", remote.notificationThresholdsToSchema()),
