@@ -78,7 +78,7 @@ func TestInt_Quotas(t *testing.T) {
 		_, err = client.Quotas.ShowByID(ctx, id)
 		require.ErrorIs(t, err, sdk.ErrObjectNotFound)
 
-		// dropping a missing quota is a not-found error, which DropSafely ignores
+		// dropping a missing quota fails; DropSafely drops it with IF EXISTS
 		err = client.Quotas.Drop(ctx, sdk.NewDropQuotaRequest(id))
 		require.ErrorIs(t, err, sdk.ErrObjectNotExistOrAuthorized)
 		require.NoError(t, client.Quotas.DropSafely(ctx, id))
@@ -317,7 +317,7 @@ func TestInt_Quotas(t *testing.T) {
 		assert.True(t, config.BlockEnforcementEnabled)
 		assert.False(t, config.PerUserBlockNotificationsEnabled)
 
-		// decimal limits are rejected
+		// limits must be positive
 		_, err = client.Quotas.SetPerUserLimit(ctx, sdk.NewSetPerUserLimitQuotaRequest(quotaId, *sdk.NewQuotaSetPerUserLimitArgsRequest(0)))
 		require.ErrorContains(t, err, "Invalid per-user limit")
 
