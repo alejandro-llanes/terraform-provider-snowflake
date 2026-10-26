@@ -161,10 +161,13 @@ Read-Only:
 
 Read-Only:
 
+- `admin_emails` (List of String)
 - `block_enforcement_enabled` (Boolean)
+- `per_user_block_notifications_enabled` (Boolean)
 - `per_user_limit` (Number)
 - `per_user_limit_daily` (Number)
 - `per_user_limit_weekly` (Number)
+- `refresh_tier` (String)
 
 
 <a id="nestedobjatt--quotas--describe_output--custom_actions"></a>
@@ -186,9 +189,9 @@ Read-Only:
 
 Read-Only:
 
-- `action_uuid` (String)
+- `action_id` (String)
 - `added_timestamp` (String)
-- `last_triggered_timestamp` (String)
+- `last_trigger_attempt_time` (String)
 - `procedure` (String)
 - `procedure_arguments` (List of String)
 
@@ -209,6 +212,7 @@ Read-Only:
 Read-Only:
 
 - `added_timestamp` (String)
+- `cycle` (String)
 - `notify_user` (Boolean)
 - `spend_strategy` (String)
 - `threshold` (Number)
@@ -241,7 +245,6 @@ Read-Only:
 Read-Only:
 
 - `tag` (String)
-- `type` (String)
 - `values` (List of String)
 
 
