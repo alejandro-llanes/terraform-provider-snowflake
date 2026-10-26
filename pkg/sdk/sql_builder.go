@@ -826,7 +826,8 @@ func quoteSystemReferenceArg(arg string) string {
 }
 
 func (v sqlSystemReferenceClause) String() (string, error) {
-	args := []string{quoteSystemReferenceArg(v.objectType), quoteSystemReferenceArg(v.object.FullyQualifiedName())}
+	args := make([]string, 0, 2+len(v.extraArgs))
+	args = append(args, quoteSystemReferenceArg(v.objectType), quoteSystemReferenceArg(v.object.FullyQualifiedName()))
 	for _, arg := range v.extraArgs {
 		args = append(args, quoteSystemReferenceArg(arg))
 	}
