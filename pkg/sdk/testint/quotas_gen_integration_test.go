@@ -224,6 +224,23 @@ func TestInt_Quotas(t *testing.T) {
 		assert.Empty(t, describe(t, quotaId).Scope.SharedResources)
 	})
 
+	// the instance method calls and SYSTEM$REFERENCE escape double quotes inside names
+	t.Run("names with double quotes", func(t *testing.T) {
+		quotaId, quotaCleanup := testClientHelper().Quota.CreateWithId(t, testClientHelper().Ids.RandomSchemaObjectIdentifierContaining(`"`))
+		t.Cleanup(quotaCleanup)
+		warehouseId := testClientHelper().Ids.RandomAccountObjectIdentifierContaining(`"`)
+		_, warehouseCleanup := testClientHelper().Warehouse.CreateWarehouseWithRequest(t, sdk.NewCreateWarehouseRequest(warehouseId).WithInitiallySuspended(true))
+		t.Cleanup(warehouseCleanup)
+
+		args := sdk.NewQuotaAddSharedResourceArgsRequest(sdk.QuotaSharedResourceDomainWarehouse).WithWarehouse(warehouseId)
+		_, err := client.Quotas.AddSharedResource(ctx, sdk.NewAddSharedResourceQuotaRequest(quotaId, *args))
+		require.NoError(t, err)
+
+		warehouses := sharedResourceNamed(t, describe(t, quotaId).Scope, sdk.QuotaSharedResourceDomainWarehouse)
+		require.Len(t, warehouses, 1)
+		assert.Equal(t, warehouseId.Name(), warehouses[0].Name)
+	})
+
 	t.Run("user scope", func(t *testing.T) {
 		quotaId, quotaCleanup := testClientHelper().Quota.Create(t)
 		t.Cleanup(quotaCleanup)

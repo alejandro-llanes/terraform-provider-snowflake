@@ -599,6 +599,17 @@ func TestBuilder_instanceMethodInvocation(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, id.FullyQualifiedName()+"!MY_METHOD ('first', 'second')", sql)
 	})
+
+	t.Run("instance method of an object with double quotes in its name", func(t *testing.T) {
+		type noArg struct{}
+		s := &struct {
+			name SchemaObjectIdentifier `ddl:"identifier,instance_method" sql:"MY_METHOD"`
+			args *noArg                 `ddl:"list,must_parentheses"`
+		}{name: NewSchemaObjectIdentifier("db", "sch", `my"object`), args: &noArg{}}
+		sql, err := structToSQL(s)
+		require.NoError(t, err)
+		assert.Equal(t, `"db"."sch"."my""object"!MY_METHOD ()`, sql)
+	})
 }
 
 func TestBuilder_systemReferenceInvocation(t *testing.T) {
@@ -680,6 +691,15 @@ func TestBuilder_systemReferenceInvocation(t *testing.T) {
 		sql, err := structToSQL(s)
 		require.NoError(t, err)
 		assert.Equal(t, `SYSTEM$REFERENCE('WAREHOUSE', '"it\'s\\here"')`, sql)
+	})
+
+	t.Run("system reference: double quotes in the name are escaped", func(t *testing.T) {
+		s := &struct {
+			name SchemaObjectIdentifier `ddl:"identifier,system_reference" sql:"CORTEX AGENT"`
+		}{name: NewSchemaObjectIdentifier("db", "sch", `my"agent`)}
+		sql, err := structToSQL(s)
+		require.NoError(t, err)
+		assert.Equal(t, `SYSTEM$REFERENCE('CORTEX AGENT', '"db"."sch"."my""agent"')`, sql)
 	})
 
 	t.Run("system reference: empty identifier is omitted", func(t *testing.T) {
