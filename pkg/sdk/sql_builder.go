@@ -834,7 +834,7 @@ type sqlInstanceMethodClause struct {
 }
 
 func (v sqlInstanceMethodClause) String() (string, error) {
-	return fmt.Sprintf("%s!%s", v.object.FullyQualifiedName(), v.method), nil
+	return fmt.Sprintf("%s!%s", v.object.FullyQualifiedNameEscaped(), v.method), nil
 }
 
 type sqlSystemReferenceClause struct {
@@ -845,7 +845,7 @@ type sqlSystemReferenceClause struct {
 }
 
 // quoteSystemReferenceArg wraps an argument in single quotes, escaping only the characters that would end the string literal
-// (double quotes in fully qualified names are kept as they are).
+// (double quotes inside names are already escaped by FullyQualifiedNameEscaped).
 func quoteSystemReferenceArg(arg string) string {
 	arg = strings.ReplaceAll(arg, `\`, `\\`)
 	arg = strings.ReplaceAll(arg, `'`, `\'`)
@@ -854,7 +854,7 @@ func quoteSystemReferenceArg(arg string) string {
 
 func (v sqlSystemReferenceClause) String() (string, error) {
 	args := make([]string, 0, 2+len(v.extraArgs))
-	args = append(args, quoteSystemReferenceArg(v.objectType), quoteSystemReferenceArg(v.object.FullyQualifiedName()))
+	args = append(args, quoteSystemReferenceArg(v.objectType), quoteSystemReferenceArg(v.object.FullyQualifiedNameEscaped()))
 	for _, arg := range v.extraArgs {
 		args = append(args, quoteSystemReferenceArg(arg))
 	}
