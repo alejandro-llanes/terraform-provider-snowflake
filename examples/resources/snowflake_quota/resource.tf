@@ -31,10 +31,6 @@ resource "snowflake_quota" "ai" {
       value = "finance"
     }
   }
-  excluded_user_tag {
-    tag   = snowflake_tag.usage_tier.fully_qualified_name
-    value = "high"
-  }
   included_users = [snowflake_user.alice.name]
   excluded_users = [snowflake_user.carol.name]
 
@@ -57,8 +53,27 @@ resource "snowflake_quota" "ai" {
     notify_user    = false
   }
 
+  # The integration and the admin emails must use verified emails of users in the account.
   notification_integrations = [snowflake_email_notification_integration.example.name]
   admin_emails              = ["admin@example.com"]
+}
+
+## All users except the ones with a tag
+resource "snowflake_quota" "all_but_high_tier" {
+  database = "database_name"
+  schema   = "schema_name"
+  name     = "default_ai_quota"
+
+  shared_resource {
+    domain = "AI FUNCTION"
+  }
+
+  excluded_user_tag {
+    tag   = snowflake_tag.usage_tier.fully_qualified_name
+    value = "high"
+  }
+
+  per_user_limit_monthly = 200
 }
 
 ## Warehouse domain: per-user warehouse credit limits with custom and cycle-start actions
@@ -74,7 +89,8 @@ resource "snowflake_quota" "warehouse" {
 
   per_user_limit_monthly = 100
 
-  # The procedures must use EXECUTE AS OWNER and be granted to the SNOWFLAKE application.
+  # The procedures must use EXECUTE AS OWNER and be granted to the SNOWFLAKE application. The first argument of a custom action
+  # procedure receives the IDs of the users who crossed the threshold; `arguments` fill the remaining ones.
   custom_action {
     procedure      = "\"database_name\".\"schema_name\".\"disable_users\"(VARCHAR)"
     spend_strategy = "ACTUAL"
