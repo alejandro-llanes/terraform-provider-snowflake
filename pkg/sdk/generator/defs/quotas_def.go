@@ -42,8 +42,8 @@ func quotaSharedResourceArgs(name string) *g.QueryStruct {
 		OptionalText("InstanceName", g.KeywordOptions().SingleQuotes()).
 		OptionalIdentifier("Warehouse", g.KindOfT[sdkcommons.AccountObjectIdentifier](), reference("WAREHOUSE")).
 		OptionalIdentifier("CortexAgent", g.KindOfT[sdkcommons.SchemaObjectIdentifier](), reference("CORTEX AGENT")).
-		// the Snowflake Intelligence and AI Gateway references follow the guide; the integration tests cover their whole domains only
 		OptionalIdentifier("SnowflakeIntelligence", g.KindOfT[sdkcommons.AccountObjectIdentifier](), reference("SNOWFLAKE INTELLIGENCE")).
+		// the AI Gateway reference follows the guide; only its whole domain is tested, as an instance needs the AI Gateway preview
 		OptionalIdentifier("AiGateway", g.KindOfT[sdkcommons.AccountObjectIdentifier](), reference("AI GATEWAY")).
 		WithValidation(g.MoreThanOneValueSet, "InstanceName", "Warehouse", "CortexAgent", "SnowflakeIntelligence", "AiGateway").
 		WithAdditionalValidations()
